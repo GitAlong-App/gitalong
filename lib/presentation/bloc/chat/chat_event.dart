@@ -1,5 +1,5 @@
 import 'package:equatable/equatable.dart';
-import '../../../../domain/entities/message_entity.dart';
+import '../../../domain/entities/message_entity.dart';
 
 abstract class ChatEvent extends Equatable {
   const ChatEvent();
@@ -11,10 +11,14 @@ abstract class ChatEvent extends Equatable {
 class LoadMessagesEvent extends ChatEvent {
   final String matchId;
 
-  const LoadMessagesEvent(this.matchId);
+  /// The signed-in user's id, used to mark incoming messages from the other
+  /// person as read while the chat is open.
+  final String? currentUserId;
+
+  const LoadMessagesEvent(this.matchId, {this.currentUserId});
 
   @override
-  List<Object?> get props => [matchId];
+  List<Object?> get props => [matchId, currentUserId];
 }
 
 class SendMessageEvent extends ChatEvent {

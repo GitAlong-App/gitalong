@@ -6,8 +6,3 @@ targets:
         options:
           auto_register: true
           prefer_relative_imports: true
-      json_serializable:json_serializable:
-        enabled: true
-        options:
-          explicit_to_json: true
-          include_if_null: false

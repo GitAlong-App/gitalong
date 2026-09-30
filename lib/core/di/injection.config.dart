@@ -9,7 +9,6 @@
 // coverage:ignore-file
 
 // ignore_for_file: no_leading_underscores_for_library_prefixes
-import 'package:dio/dio.dart' as _i361;
 import 'package:get_it/get_it.dart' as _i174;
 import 'package:google_sign_in/google_sign_in.dart' as _i116;
 import 'package:injectable/injectable.dart' as _i526;
@@ -19,16 +18,15 @@ import '../../data/repositories/auth_repository_impl.dart' as _i895;
 import '../../data/repositories/chat_repository_impl.dart' as _i838;
 import '../../data/repositories/match_repository_impl.dart' as _i395;
 import '../../data/repositories/notification_repository_impl.dart' as _i9998;
+import '../../data/repositories/progress_repository_impl.dart' as _i9996;
 import '../../data/repositories/swipe_repository_impl.dart' as _i1047;
 import '../../data/repositories/user_repository_impl.dart' as _i790;
 import '../../data/services/backend_api_client.dart' as _i1031;
-import '../../data/services/cache_service.dart' as _i763;
-import '../../data/services/github_service.dart' as _i248;
-import '../../data/services/http_module.dart' as _i323;
 import '../../domain/repositories/auth_repository.dart' as _i1073;
 import '../../domain/repositories/chat_repository.dart' as _i1072;
 import '../../domain/repositories/match_repository.dart' as _i568;
 import '../../domain/repositories/notification_repository.dart' as _i9999;
+import '../../domain/repositories/progress_repository.dart' as _i9997;
 import '../../domain/repositories/swipe_repository.dart' as _i280;
 import '../../domain/repositories/user_repository.dart' as _i271;
 import '../../domain/usecases/auth/delete_account_usecase.dart' as _i778;
@@ -48,6 +46,7 @@ import '../../presentation/bloc/chat/chat_bloc.dart' as _i573;
 import '../../presentation/bloc/discover/discover_bloc.dart' as _i600;
 import '../../presentation/bloc/matches/matches_bloc.dart' as _i556;
 import '../../presentation/bloc/profile/profile_bloc.dart' as _i636;
+import '../../presentation/bloc/progress/progress_cubit.dart' as _i9995;
 
 extension GetItInjectableX on _i174.GetIt {
   // initializes the registration of main-scope dependencies inside of GetIt
@@ -56,26 +55,20 @@ extension GetItInjectableX on _i174.GetIt {
     _i526.EnvironmentFilter? environmentFilter,
   }) {
     final gh = _i526.GetItHelper(this, environment, environmentFilter);
-    final httpModule = _$HttpModule();
-    gh.lazySingleton<_i763.CacheService>(() => _i763.CacheService());
-    gh.lazySingleton<_i361.Dio>(() => httpModule.dio);
     gh.lazySingleton<_i1072.ChatRepository>(
       () => _i838.ChatRepositoryImpl(gh<_i454.SupabaseClient>()),
     );
     gh.lazySingleton<_i9999.NotificationRepository>(
       () => _i9998.NotificationRepositoryImpl(gh<_i454.SupabaseClient>()),
     );
+    gh.lazySingleton<_i9997.ProgressRepository>(
+      () => _i9996.ProgressRepositoryImpl(gh<_i454.SupabaseClient>()),
+    );
     gh.lazySingleton<_i280.SwipeRepository>(
-      () => _i1047.SwipeRepositoryImpl(
-        gh<_i454.SupabaseClient>(),
-        gh<_i1031.BackendApiClient>(),
-      ),
+      () => _i1047.SwipeRepositoryImpl(gh<_i454.SupabaseClient>()),
     );
     gh.lazySingleton<_i1031.BackendApiClient>(
       () => _i1031.BackendApiClient(gh<_i454.SupabaseClient>()),
-    );
-    gh.lazySingleton<_i248.GitHubService>(
-      () => _i248.GitHubService(gh<_i361.Dio>()),
     );
     gh.factory<_i105.GetMessagesUseCase>(
       () => _i105.GetMessagesUseCase(gh<_i1072.ChatRepository>()),
@@ -86,6 +79,9 @@ extension GetItInjectableX on _i174.GetIt {
     gh.factory<_i573.ChatBloc>(
       () => _i573.ChatBloc(gh<_i1072.ChatRepository>()),
     );
+    gh.lazySingleton<_i9995.ProgressCubit>(
+      () => _i9995.ProgressCubit(gh<_i9997.ProgressRepository>()),
+    );
     gh.lazySingleton<_i568.MatchRepository>(
       () => _i395.MatchRepositoryImpl(gh<_i454.SupabaseClient>()),
     );
@@ -93,7 +89,7 @@ extension GetItInjectableX on _i174.GetIt {
       () => _i895.AuthRepositoryImpl(
         gh<_i454.SupabaseClient>(),
         gh<_i116.GoogleSignIn>(),
-        gh<_i248.GitHubService>(),
+        gh<_i1031.BackendApiClient>(),
       ),
     );
     gh.factory<_i796.SwipeUserUseCase>(
@@ -136,7 +132,7 @@ extension GetItInjectableX on _i174.GetIt {
       () => _i600.DiscoverBloc(
         gh<_i850.GetRecommendedUsersUseCase>(),
         gh<_i796.SwipeUserUseCase>(),
-        gh<_i1031.BackendApiClient>(),
+        gh<_i568.MatchRepository>(),
       ),
     );
     gh.factory<_i636.ProfileBloc>(
@@ -163,5 +159,3 @@ extension GetItInjectableX on _i174.GetIt {
     return this;
   }
 }
-
-class _$HttpModule extends _i323.HttpModule {}

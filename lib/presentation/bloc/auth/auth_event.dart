@@ -19,3 +19,6 @@ class SignOutEvent extends AuthEvent {}
 
 class DeleteAccountEvent extends AuthEvent {}
 
+/// The Supabase session ended outside the app's control (signed out
+/// elsewhere, refresh token revoked/expired, user deleted).
+class AuthSessionEndedEvent extends AuthEvent {}

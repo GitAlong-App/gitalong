@@ -1,21 +1,29 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:go_router/go_router.dart';
-import 'package:phosphor_flutter/phosphor_flutter.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 
-import '../../../core/di/injection.dart';
+import '../../../core/constants/illustrations.dart';
 import '../../../core/theme/app_colors.dart';
-import '../../../core/theme/app_text_styles.dart';
-import '../../../core/utils/feedback_service.dart';
+import '../../../core/theme/app_palette.dart';
+import '../../../core/theme/app_tokens.dart';
 import '../../../domain/entities/match_entity.dart';
+import '../../bloc/auth/auth_bloc.dart';
+import '../../bloc/auth/auth_state.dart';
 import '../../bloc/matches/matches_bloc.dart';
 import '../../bloc/matches/matches_event.dart';
 import '../../bloc/matches/matches_state.dart';
+import '../../widgets/ui/ui.dart';
+import '../chat/widgets/conversation_skeletons.dart';
+import '../chat/widgets/conversation_tile.dart';
+import '../chat/widgets/matches_refresh.dart';
+import 'widgets/new_match_avatar.dart';
 
-/// Matches screen — new matches row + all matches list
+/// Matches: a "New matches" row (no messages yet, avatars in a green ring),
+/// then the conversations as tiles with unread pills.
+///
+/// Reads the [MatchesBloc] provided by HomeScreen (shared with the Chats
+/// tab) or by the standalone route.
 class MatchesScreen extends StatefulWidget {
   const MatchesScreen({super.key});
 
@@ -24,385 +32,307 @@ class MatchesScreen extends StatefulWidget {
 }
 
 class _MatchesScreenState extends State<MatchesScreen> {
-  late MatchesBloc _matchesBloc;
-
-  @override
-  void initState() {
-    super.initState();
-    _matchesBloc = getIt<MatchesBloc>()..add(LoadMatchesEvent());
-  }
-
-  @override
-  void dispose() {
-    _matchesBloc.close();
-    super.dispose();
-  }
+  /// The staggered entrance plays once, for the first list shown; later
+  /// rebuilds (refreshes, scrolling) show items straight away.
+  bool _entranceArmed = true;
+  bool _entranceDisarmScheduled = false;
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider.value(
-      value: _matchesBloc,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Matches'),
-        ),
-        body: BlocBuilder<MatchesBloc, MatchesState>(
-          builder: (context, state) {
-            if (state is MatchesLoading) {
-              return const Center(child: CircularProgressIndicator());
+    final matchesBloc = context.read<MatchesBloc>();
+    return Scaffold(
+      appBar: AppBar(title: const Text('Matches')),
+      body: BlocBuilder<MatchesBloc, MatchesState>(
+        builder: (context, state) {
+          final String kind;
+          final Widget child;
+          if (state is MatchesLoaded) {
+            if (state.matches.isEmpty) {
+              kind = 'empty';
+              child = _buildEmpty(matchesBloc);
+            } else {
+              kind = 'list';
+              child = _buildList(context, matchesBloc, state.matches);
             }
-
-            if (state is MatchesError) {
-              return Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      PhosphorIconsRegular.wifiX,
-                      size: 64.sp,
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                    SizedBox(height: 16.h),
-                    Text(
-                      'Something went wrong',
-                      style: AppTextStyles.titleMedium(
-                        Theme.of(context).colorScheme.onSurface,
-                      ),
-                    ),
-                    SizedBox(height: 8.h),
-                    TextButton(
-                      onPressed: () =>
-                          _matchesBloc.add(RefreshMatchesEvent()),
-                      child: const Text('Try Again'),
-                    ),
-                  ],
-                ),
-              );
-            }
-
-            if (state is MatchesLoaded) {
-              if (state.matches.isEmpty) {
-                return _EmptyMatchesView();
-              }
-
-              final newMatches = state.matches
-                  .where((m) => m.lastMessage == null)
-                  .toList();
-              final conversations = state.matches
-                  .where((m) => m.lastMessage != null)
-                  .toList()
-                ..sort((a, b) {
-                  final aTime = a.lastMessageAt ?? a.matchedAt;
-                  final bTime = b.lastMessageAt ?? b.matchedAt;
-                  return bTime.compareTo(aTime);
-                });
-
-              return RefreshIndicator(
-                onRefresh: () async =>
-                    _matchesBloc.add(RefreshMatchesEvent()),
-                child: CustomScrollView(
-                  slivers: [
-                    // New Matches horizontal row
-                    if (newMatches.isNotEmpty) ...[
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.fromLTRB(16.w, 16.h, 16.w, 8.h),
-                          child: Text(
-                            'New Matches',
-                            style: AppTextStyles.titleMedium(
-                              Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                        ),
-                      ),
-                      SliverToBoxAdapter(
-                        child: SizedBox(
-                          height: 100.h,
-                          child: ListView.separated(
-                            padding:
-                                EdgeInsets.symmetric(horizontal: 16.w),
-                            scrollDirection: Axis.horizontal,
-                            itemCount: newMatches.length,
-                            separatorBuilder: (_, __) =>
-                                SizedBox(width: 16.w),
-                            itemBuilder: (context, index) {
-                              return _NewMatchAvatar(
-                                match: newMatches[index],
-                                onTap: () =>
-                                    _openChat(context, newMatches[index]),
-                              ).animate().fade(duration: 400.ms, delay: (index * 50).ms).slideX(begin: 0.2);
-                            },
-                          ),
-                        ),
-                      ),
-                      SliverToBoxAdapter(child: SizedBox(height: 8.h)),
-                    ],
-
-                    // Conversations section
-                    if (conversations.isNotEmpty)
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding:
-                              EdgeInsets.fromLTRB(16.w, 8.h, 16.w, 8.h),
-                          child: Text(
-                            'Messages',
-                            style: AppTextStyles.titleMedium(
-                              Theme.of(context).colorScheme.onSurface,
-                            ),
-                          ),
-                        ),
-                      ),
-                    SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) => _ConversationTile(
-                          match: conversations[index],
-                          onTap: () =>
-                              _openChat(context, conversations[index]),
-                        ).animate().fade(duration: 500.ms, delay: (index * 30).ms).slideY(begin: 0.1),
-                        childCount: conversations.length,
-                      ),
-                    ),
-
-                    // If only new matches, show nudge
-                    if (conversations.isEmpty && newMatches.isNotEmpty)
-                      SliverFillRemaining(
-                        hasScrollBody: false,
-                        child: Center(
-                          child: Padding(
-                            padding: EdgeInsets.all(32.w),
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  PhosphorIconsRegular.chatCircleDots,
-                                  size: 64.sp,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                                ),
-                                SizedBox(height: 12.h),
-                                Text(
-                                  'Start a conversation!',
-                                  style: AppTextStyles.titleMedium(
-                                    Theme.of(context).colorScheme.onSurface,
-                                  ),
-                                ),
-                                SizedBox(height: 8.h),
-                                Text(
-                                  'Tap a match above to send the first message.',
-                                  textAlign: TextAlign.center,
-                                  style: AppTextStyles.bodyMedium(
-                                    Theme.of(context)
-                                        .colorScheme
-                                        .onSurfaceVariant,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-
-                    SliverToBoxAdapter(child: SizedBox(height: 16.h)),
-                  ],
-                ),
-              );
-            }
-
-            return const SizedBox.shrink();
-          },
-        ),
+          } else if (state is MatchesError) {
+            kind = 'error';
+            child = _buildError(matchesBloc);
+          } else {
+            kind = 'loading';
+            child = const _MatchesSkeleton();
+          }
+          return AnimatedSwitcher(
+            duration: AppTokens.motion(context, AppTokens.medium),
+            child: KeyedSubtree(key: ValueKey<String>(kind), child: child),
+          );
+        },
       ),
     );
   }
 
-  void _openChat(BuildContext context, MatchEntity match) {
-    FeedbackService.onButtonPress();
-    context.push(
+  Widget _buildList(
+    BuildContext context,
+    MatchesBloc matchesBloc,
+    List<MatchEntity> matches,
+  ) {
+    final myId = _myUserId(context);
+    // Repository order (newest match first) for the new-matches row.
+    final newMatches = matches.where((m) => m.lastMessage == null).toList();
+    final conversations = matches.where((m) => m.lastMessage != null).toList()
+      ..sort(compareByRecency);
+    final unreadCount = conversations.where(isMatchUnread).length;
+    _scheduleEntranceDisarm();
+
+    return RefreshIndicator(
+      color: AppColors.green,
+      backgroundColor: context.palette.card,
+      onRefresh: () => refreshMatchesSilently(matchesBloc),
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          if (newMatches.isNotEmpty) ...[
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(
+                AppTokens.gutter,
+                AppTokens.space16,
+                AppTokens.gutter,
+                AppTokens.space4,
+              ),
+              sliver: SliverToBoxAdapter(
+                child: SectionHeader(
+                  title: 'New matches',
+                  subtitle: newMatches.length == 1
+                      ? '1 builder is waiting for your hello'
+                      : '${newMatches.length} builders are waiting for your '
+                          'hello',
+                ),
+              ),
+            ),
+            SliverToBoxAdapter(
+              child: SizedBox(
+                height: NewMatchAvatar.heightFor(context),
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppTokens.gutter - 6,
+                  ),
+                  itemCount: newMatches.length,
+                  separatorBuilder: (context, index) =>
+                      const SizedBox(width: AppTokens.space4),
+                  itemBuilder: (context, index) {
+                    final match = newMatches[index];
+                    return _entrance(
+                      context,
+                      index,
+                      NewMatchAvatar(
+                        match: match,
+                        onTap: () => _openChat(context, match),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
+          if (conversations.isNotEmpty) ...[
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(
+                AppTokens.gutter,
+                newMatches.isEmpty ? AppTokens.space16 : AppTokens.space20,
+                AppTokens.gutter,
+                AppTokens.space12,
+              ),
+              sliver: SliverToBoxAdapter(
+                child: SectionHeader(
+                  title: 'Conversations',
+                  trailing: unreadCount == 0
+                      ? null
+                      : GaBadge(
+                          count: unreadCount,
+                          semanticLabel: unreadCount == 1
+                              ? '1 unread conversation'
+                              : '$unreadCount unread conversations',
+                        ),
+                ),
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: AppTokens.gutter),
+              sliver: SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final match = conversations[index];
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: AppTokens.space12),
+                      child: _entrance(
+                        context,
+                        index + 2,
+                        ConversationTile(
+                          match: match,
+                          myUserId: myId,
+                          onTap: () => _openChat(context, match),
+                        ),
+                      ),
+                    );
+                  },
+                  childCount: conversations.length,
+                ),
+              ),
+            ),
+          ],
+          // Only new matches so far: nudge towards the first message.
+          if (conversations.isEmpty && newMatches.isNotEmpty)
+            SliverFillRemaining(
+              hasScrollBody: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppTokens.gutter,
+                  AppTokens.space24,
+                  AppTokens.gutter,
+                  AppTokens.space24,
+                ),
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: MascotBubble(
+                    message: "Tap a new match to say hi. I've got "
+                        'icebreakers ready for you!',
+                    mascotSize: 72,
+                  ),
+                ),
+              ),
+            ),
+          const SliverToBoxAdapter(
+            child: SizedBox(height: AppTokens.space24),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmpty(MatchesBloc matchesBloc) {
+    return RefreshableFill(
+      onRefresh: () => refreshMatchesSilently(matchesBloc),
+      child: EmptyState(
+        illustration: Illustrations.octopus,
+        title: 'No matches yet',
+        message: "Keep swiping on Discover! When someone you like likes you "
+            "back, I'll bring them right here.",
+      ),
+    );
+  }
+
+  Widget _buildError(MatchesBloc matchesBloc) {
+    return RefreshableFill(
+      onRefresh: () => refreshMatchesSilently(matchesBloc),
+      child: EmptyState(
+        illustration: Illustrations.thinkingFace,
+        title: "Couldn't load your matches",
+        message: 'Check your connection and try again.',
+        actionLabel: 'Try again',
+        onAction: () => _retry(matchesBloc),
+      ),
+    );
+  }
+
+  /// Staggered fade + slide-up, only for the first list shown and never
+  /// under reduced motion.
+  Widget _entrance(BuildContext context, int index, Widget child) {
+    if (!_entranceArmed || index > 8 || AppTokens.reduceMotion(context)) {
+      return child;
+    }
+    return child
+        .animate(delay: AppTokens.stagger * index)
+        .fadeIn(duration: AppTokens.medium, curve: AppTokens.curve)
+        .moveY(
+          begin: AppTokens.entranceOffset,
+          end: 0,
+          duration: AppTokens.medium,
+          curve: AppTokens.curve,
+        );
+  }
+
+  void _scheduleEntranceDisarm() {
+    if (_entranceDisarmScheduled) return;
+    _entranceDisarmScheduled = true;
+    // Longer than the last staggered item (8 × 40 ms + 250 ms).
+    Future<void>.delayed(const Duration(milliseconds: 900), () {
+      _entranceArmed = false;
+    });
+  }
+
+  String? _myUserId(BuildContext context) {
+    final authState = context.read<AuthBloc>().state;
+    return authState is AuthAuthenticated ? authState.user.id : null;
+  }
+
+  void _retry(MatchesBloc matchesBloc) {
+    if (!matchesBloc.isClosed) matchesBloc.add(RefreshMatchesEvent());
+  }
+
+  Future<void> _openChat(BuildContext context, MatchEntity match) async {
+    final matchesBloc = context.read<MatchesBloc>();
+    await context.push(
       '/chats/${match.id}',
       extra: {
         'otherUserName': match.user.name ?? match.user.username,
         'otherUserAvatar': match.user.avatarUrl,
       },
     );
+    // Back from the chat: pick up read state, unmatch/block, new messages.
+    if (!matchesBloc.isClosed) matchesBloc.add(RefreshMatchesEvent());
   }
 }
 
-class _EmptyMatchesView extends StatelessWidget {
+/// Loading placeholder shaped like the loaded screen.
+class _MatchesSkeleton extends StatelessWidget {
+  const _MatchesSkeleton();
+
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: EdgeInsets.all(32.w),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+    return Semantics(
+      label: 'Loading matches',
+      container: true,
+      child: ExcludeSemantics(
+        child: ListView(
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.fromLTRB(
+            AppTokens.gutter,
+            AppTokens.space16,
+            AppTokens.gutter,
+            AppTokens.space24,
+          ),
           children: [
-            Icon(
-              PhosphorIconsRegular.heart,
-              size: 80.sp,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-            SizedBox(height: 16.h),
-            Text(
-              'No matches yet',
-              style: AppTextStyles.titleMedium(
-                Theme.of(context).colorScheme.onSurface,
+            GaSkeleton(width: 150, height: 20),
+            const SizedBox(height: AppTokens.space16),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
+              child: Row(
+                children: [
+                  for (var i = 0; i < 5; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(right: AppTokens.space16),
+                      child: Column(
+                        children: [
+                          GaSkeleton.circle(size: 72),
+                          const SizedBox(height: AppTokens.space8),
+                          GaSkeleton(width: 52, height: 12),
+                        ],
+                      ),
+                    ),
+                ],
               ),
             ),
-            SizedBox(height: 8.h),
-            Text(
-              'Start swiping to find your dev matches',
-              textAlign: TextAlign.center,
-              style: AppTextStyles.bodyMedium(
-                Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
+            const SizedBox(height: AppTokens.space32),
+            GaSkeleton(width: 170, height: 20),
+            const SizedBox(height: AppTokens.space16),
+            for (var i = 0; i < 4; i++) ...[
+              const ConversationTileSkeleton(),
+              const SizedBox(height: AppTokens.space12),
+            ],
           ],
         ),
       ),
     );
-  }
-}
-
-class _NewMatchAvatar extends StatelessWidget {
-  final MatchEntity match;
-  final VoidCallback onTap;
-
-  const _NewMatchAvatar({required this.match, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
-          Stack(
-            children: [
-              CircleAvatar(
-                radius: 32.r,
-                backgroundColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest,
-                backgroundImage: match.user.avatarUrl != null
-                    ? CachedNetworkImageProvider(match.user.avatarUrl!)
-                    : null,
-                child: match.user.avatarUrl == null
-                    ? Icon(PhosphorIconsRegular.user, size: 28.sp)
-                    : null,
-              ),
-              Positioned(
-                right: 0,
-                bottom: 0,
-                child: Container(
-                  width: 14.r,
-                  height: 14.r,
-                  decoration: BoxDecoration(
-                    color: AppColors.primary,
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Theme.of(context).colorScheme.surface,
-                      width: 2,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 4.h),
-          SizedBox(
-            width: 64.w,
-            child: Text(
-              match.user.name ?? match.user.username,
-              style: AppTextStyles.bodySmall(
-                Theme.of(context).colorScheme.onSurface,
-              ),
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ConversationTile extends StatelessWidget {
-  final MatchEntity match;
-  final VoidCallback onTap;
-
-  const _ConversationTile({required this.match, required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final bool hasUnread = !match.isRead;
-    final timeAgo = _formatTime(match.lastMessageAt ?? match.matchedAt);
-
-    return ListTile(
-      onTap: onTap,
-      contentPadding: EdgeInsets.symmetric(horizontal: 16.w, vertical: 4.h),
-      leading: CircleAvatar(
-        radius: 28.r,
-        backgroundColor:
-            Theme.of(context).colorScheme.surfaceContainerHighest,
-        backgroundImage: match.user.avatarUrl != null
-            ? CachedNetworkImageProvider(match.user.avatarUrl!)
-            : null,
-        child: match.user.avatarUrl == null
-            ? Icon(PhosphorIconsRegular.user, size: 24.sp)
-            : null,
-      ),
-      title: Text(
-        match.user.name ?? match.user.username,
-        style: hasUnread
-            ? AppTextStyles.titleSmall(
-                Theme.of(context).colorScheme.onSurface)
-            : AppTextStyles.bodyMedium(
-                Theme.of(context).colorScheme.onSurface),
-      ),
-      subtitle: Text(
-        match.lastMessage ?? 'Say hi! 👋',
-        style: hasUnread
-            ? AppTextStyles.bodyMedium(AppColors.primary)
-            : AppTextStyles.bodyMedium(
-                Theme.of(context).colorScheme.onSurfaceVariant),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-      trailing: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Text(
-            timeAgo,
-            style: AppTextStyles.bodySmall(
-              hasUnread
-                  ? AppColors.primary
-                  : Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          ),
-          if (hasUnread) ...[
-            SizedBox(height: 4.h),
-            Container(
-              width: 10.r,
-              height: 10.r,
-              decoration: const BoxDecoration(
-                color: AppColors.primary,
-                shape: BoxShape.circle,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  String _formatTime(DateTime dt) {
-    final now = DateTime.now();
-    final diff = now.difference(dt);
-    if (diff.inMinutes < 1) return 'now';
-    if (diff.inHours < 1) return '${diff.inMinutes}m';
-    if (diff.inDays < 1) return '${diff.inHours}h';
-    if (diff.inDays < 7) return '${diff.inDays}d';
-    return '${dt.day}/${dt.month}';
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:injectable/injectable.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -6,7 +8,6 @@ import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../../domain/entities/user_entity.dart';
 import '../../domain/repositories/auth_repository.dart';
 import '../models/user_model.dart';
-import '../services/github_service.dart';
 import '../services/backend_api_client.dart';
 import '../../core/utils/logger.dart';
 
@@ -15,14 +16,23 @@ import '../../core/utils/logger.dart';
 class AuthRepositoryImpl implements AuthRepository {
   final SupabaseClient _supabase;
   final GoogleSignIn _googleSignIn;
-  final GitHubService _githubService;
-  
+  final BackendApiClient _backendApiClient;
+
+  /// GitHub stats older than this are refreshed in the background.
+  static const Duration _githubSyncMaxAge = Duration(hours: 24);
+
+  /// Minimum gap between background refresh attempts, so a GitHub outage
+  /// (backend answers 503 and leaves `github_synced_at` unset) doesn't turn
+  /// every profile load into another request.
+  static const Duration _githubRetryCooldown = Duration(minutes: 10);
+  DateTime? _lastGitHubRefreshAttempt;
+
   AuthRepositoryImpl(
     this._supabase,
     this._googleSignIn,
-    this._githubService,
+    this._backendApiClient,
   );
-  
+
   @override
   Future<UserEntity> signInWithGitHub() async {
     try {
@@ -30,11 +40,11 @@ class AuthRepositoryImpl implements AuthRepository {
         OAuthProvider.github,
         redirectTo: 'app.gitalong://login-callback/',
       );
-      
+
       if (!success) {
         throw Exception('Failed to launch GitHub login');
       }
-      
+
       // Dummy entity since we rely on AuthBloc listening to onAuthStateChange stream!
       return UserEntity(id: '', username: '', email: '', createdAt: DateTime.now());
     } catch (e, stackTrace) {
@@ -42,7 +52,7 @@ class AuthRepositoryImpl implements AuthRepository {
       rethrow;
     }
   }
-  
+
   @override
   Future<UserEntity> signInWithGoogle() async {
     try {
@@ -50,7 +60,7 @@ class AuthRepositoryImpl implements AuthRepository {
       if (googleUser == null) {
         throw Exception('Google sign in cancelled');
       }
-      
+
       final googleAuth = await googleUser.authentication;
       final accessToken = googleAuth.accessToken;
       final idToken = googleAuth.idToken;
@@ -64,18 +74,18 @@ class AuthRepositoryImpl implements AuthRepository {
         idToken: idToken,
         accessToken: accessToken,
       );
-      
+
       if (response.user == null) {
         throw Exception('Failed to sign in with Google');
       }
-      
-      return await _createOrUpdateUser(response.user!);
+
+      return await _loadOwnProfile();
     } catch (e, stackTrace) {
       AppLogger.e('Error signing in with Google', e, stackTrace);
       rethrow;
     }
   }
-  
+
   @override
   Future<UserEntity> signInWithApple() async {
     try {
@@ -85,28 +95,28 @@ class AuthRepositoryImpl implements AuthRepository {
           AppleIDAuthorizationScopes.fullName,
         ],
       );
-      
+
       final idToken = credential.identityToken;
       if (idToken == null) {
-         throw Exception('Identity token missing');
+        throw Exception('Identity token missing');
       }
 
       final response = await _supabase.auth.signInWithIdToken(
         provider: OAuthProvider.apple,
         idToken: idToken,
       );
-      
+
       if (response.user == null) {
         throw Exception('Failed to sign in with Apple');
       }
-      
-      return await _createOrUpdateUser(response.user!);
+
+      return await _loadOwnProfile();
     } catch (e, stackTrace) {
       AppLogger.e('Error signing in with Apple', e, stackTrace);
       rethrow;
     }
   }
-  
+
   @override
   Future<void> signOut() async {
     try {
@@ -119,174 +129,104 @@ class AuthRepositoryImpl implements AuthRepository {
       rethrow;
     }
   }
-  
+
   @override
   Future<UserEntity?> getCurrentUser() async {
     try {
-      final user = _supabase.auth.currentUser;
-      
-      if (user == null) {
+      if (_supabase.auth.currentUser == null) {
         return null;
       }
-      
-      final response = await _supabase
-          .from('users')
-          .select()
-          .eq('id', user.id)
-          .maybeSingle();
-          
-      if (response == null) {
-        // Since user is logged into Auth but not in our public.users table!
-        // This handles cases where user successfully authed with github but the
-        // DB creation step earlier failed or was blocked by OS kill/background.
-        return await _createOrUpdateUser(user);
-      }
-      
-      return UserModel.fromJson(response).toEntity();
+      return await _loadOwnProfile();
     } catch (e, stackTrace) {
       AppLogger.e('Error getting current user', e, stackTrace);
       rethrow;
     }
   }
-  
+
   @override
   Future<bool> isAuthenticated() async {
     return _supabase.auth.currentUser != null;
   }
-  
+
   @override
   Future<void> deleteAccount() async {
+    final user = _supabase.auth.currentUser;
+    if (user == null) {
+      throw Exception('No user signed in');
+    }
+
+    // 1. Backend: full server-side cleanup (auth user, matches, messages...).
+    final backendDeleted = await _backendApiClient.deleteAccount();
+
+    // 2. Fallback: the database can delete the account on its own. If this
+    //    throws too, the error propagates and the UI shows it — we never
+    //    pretend a partial delete worked.
+    if (!backendDeleted) {
+      AppLogger.w('Backend delete failed, falling back to delete_my_account RPC');
+      try {
+        await _supabase.rpc('delete_my_account');
+      } catch (e, stackTrace) {
+        AppLogger.e('delete_my_account RPC failed', e, stackTrace);
+        throw Exception('Account deletion failed. Please try again.');
+      }
+    }
+
+    // 3. The account is gone; clearing the local session must not turn a
+    //    successful deletion into an error.
     try {
-      final user = _supabase.auth.currentUser;
-      
-      if (user == null) {
-        throw Exception('No user signed in');
-      }
-
-      // Call backend for complete server-side cleanup (matches, messages, auth, etc.)
-      final backendApiClient = BackendApiClient(_supabase);
-      final backendDeleted = await backendApiClient.deleteAccount();
-
-      if (!backendDeleted) {
-        // Fallback: at minimum delete from public.users (cascade handles swipes)
-        AppLogger.w('Backend delete failed, falling back to direct delete');
-        await _supabase.from('users').delete().eq('id', user.id);
-      }
-      
       await signOut();
     } catch (e, stackTrace) {
-      AppLogger.e('Error deleting account', e, stackTrace);
-      rethrow;
+      AppLogger.w('Sign-out after account deletion failed (ignored)', e, stackTrace);
     }
   }
-  
-  Future<UserEntity> _createOrUpdateUser(User user) async {
+
+  /// Loads (and if necessary creates) the caller's `users` row via the
+  /// `ensure_user_profile` RPC, which also bumps `last_active_at`.
+  Future<UserEntity> _loadOwnProfile() async {
+    final result = await _supabase.rpc('ensure_user_profile');
+
+    Map<String, dynamic>? row;
+    if (result is Map) {
+      row = result.map((key, value) => MapEntry(key.toString(), value));
+    } else if (result is List && result.isNotEmpty && result.first is Map) {
+      final first = result.first as Map;
+      row = first.map((key, value) => MapEntry(key.toString(), value));
+    }
+
+    if (row == null) {
+      throw Exception('Could not load your profile');
+    }
+
+    final user = UserModel.fromJson(row).toEntity();
+    _refreshGitHubIfStale(user);
+    return user;
+  }
+
+  /// GitHub-derived stats are written by the backend only. If they are
+  /// missing or older than [_githubSyncMaxAge], ask the backend to refresh
+  /// them without blocking the caller.
+  void _refreshGitHubIfStale(UserEntity user) {
+    final syncedAt = user.githubSyncedAt;
     final now = DateTime.now();
+    final isStale =
+        syncedAt == null || now.difference(syncedAt) > _githubSyncMaxAge;
+    if (!isStale) return;
 
-    final existingUser = await _supabase
-        .from('users')
-        .select()
-        .eq('id', user.id)
-        .maybeSingle();
-
-    if (existingUser != null) {
-      final updatedData = await _supabase
-          .from('users')
-          .update({'last_active_at': now.toIso8601String()})
-          .eq('id', user.id)
-          .select()
-          .single();
-      return UserModel.fromJson(updatedData).toEntity();
-    } else {
-      final name = user.userMetadata?['full_name'] ?? user.userMetadata?['name'];
-      final avatarUrl = user.userMetadata?['avatar_url'];
-      final githubUsername = user.userMetadata?['preferred_username'] ??
-          user.userMetadata?['user_name'] ??
-          user.userMetadata?['name'] ??
-          user.email?.split('@').first ??
-          'user_${user.id.substring(0, 8)}';
-
-      final newUserData = {
-        'id': user.id,
-        'username': githubUsername as String,
-        'email': user.email ?? '',
-        if (name != null) 'name': name as String,
-        if (avatarUrl != null) 'avatar_url': avatarUrl as String,
-        'followers': user.userMetadata?['followers'] ?? 0,
-        'following': user.userMetadata?['following'] ?? 0,
-        'public_repos': user.userMetadata?['public_repos'] ?? 0,
-        'languages': <String>[],
-        'interests': <String>[],
-        'created_at': now.toIso8601String(),
-        'last_active_at': now.toIso8601String(),
-      };
-
-      final insertedData = await _supabase
-          .from('users')
-          .insert(newUserData)
-          .select()
-          .single();
-
-      final entity = UserModel.fromJson(insertedData).toEntity();
-
-      // Best-effort enrichment from GitHub API
-      return await _enrichFromGitHub(entity, githubUsername);
+    final lastAttempt = _lastGitHubRefreshAttempt;
+    if (lastAttempt != null &&
+        now.difference(lastAttempt) < _githubRetryCooldown) {
+      return;
     }
+    _lastGitHubRefreshAttempt = now;
+    unawaited(_refreshGitHubInBackground());
   }
 
-  /// Fetches real profile data and languages from the GitHub API
-  /// and updates the Supabase user row. Falls back to the original
-  /// entity if the API is unreachable.
-  Future<UserEntity> _enrichFromGitHub(
-    UserEntity entity,
-    String username,
-  ) async {
+  Future<void> _refreshGitHubInBackground() async {
     try {
-      AppLogger.i('Enriching profile from GitHub for $username');
-
-      final results = await Future.wait([
-        _githubService.getUserProfile(username),
-        _githubService.analyzeLanguages(username),
-      ]);
-
-      final profile = results[0] as GitHubProfile?;
-      final langMap = results[1] as Map<String, int>;
-      final topLanguages = langMap.keys.take(10).toList();
-
-      if (profile == null && topLanguages.isEmpty) return entity;
-
-      final updates = <String, dynamic>{
-        'last_active_at': DateTime.now().toIso8601String(),
-      };
-
-      if (profile != null) {
-        if (profile.bio != null) updates['bio'] = profile.bio;
-        if (profile.location != null) updates['location'] = profile.location;
-        if (profile.company != null) updates['company'] = profile.company;
-        updates['followers'] = profile.followers;
-        updates['following'] = profile.following;
-        updates['public_repos'] = profile.publicRepos;
-        updates['github_url'] = 'https://github.com/$username';
-      }
-
-      if (topLanguages.isNotEmpty) {
-        updates['languages'] = topLanguages;
-      }
-
-      final updatedRow = await _supabase
-          .from('users')
-          .update(updates)
-          .eq('id', entity.id)
-          .select()
-          .single();
-
-      AppLogger.i('GitHub enrichment complete for $username');
-      return UserModel.fromJson(updatedRow).toEntity();
+      await _backendApiClient.refreshGitHubStats();
+      AppLogger.i('GitHub stats refreshed in the background');
     } catch (e, stackTrace) {
-      AppLogger.w('GitHub enrichment failed (non-fatal): $e');
-      AppLogger.e('GitHub enrichment error', e, stackTrace);
-      return entity;
+      AppLogger.w('Background GitHub refresh failed (non-fatal)', e, stackTrace);
     }
   }
 }
-

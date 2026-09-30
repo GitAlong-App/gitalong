@@ -1,10 +1,10 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:injectable/injectable.dart';
 
-import '../../../../data/services/backend_api_client.dart';
-import '../../../../domain/usecases/auth/get_current_user_usecase.dart';
-import '../../../../domain/usecases/match/get_matches_usecase.dart';
-import '../../../../domain/usecases/user/update_user_profile_usecase.dart';
+import '../../../data/services/backend_api_client.dart';
+import '../../../domain/usecases/auth/get_current_user_usecase.dart';
+import '../../../domain/usecases/match/get_matches_usecase.dart';
+import '../../../domain/usecases/user/update_user_profile_usecase.dart';
 import 'profile_event.dart';
 import 'profile_state.dart';
 
@@ -114,7 +114,13 @@ class ProfileBloc extends Bloc<ProfileEvent, ProfileState> {
         chatCount: chatCount,
       ));
     } catch (e) {
-      emit(ProfileError('Failed to refresh GitHub stats: $e'));
+      emit(const ProfileError(
+        "Couldn't refresh from GitHub right now. Please try again later.",
+      ));
+      // Nothing was overwritten server-side: keep showing the profile.
+      if (prevState is ProfileLoaded) {
+        emit(prevState);
+      }
     }
   }
 }

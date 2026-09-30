@@ -8,16 +8,23 @@ import '../../core/utils/logger.dart';
 import '../../domain/entities/user_entity.dart';
 import '../models/user_model.dart';
 
-/// Centralized HTTP client for the GitAlong Python backend.
+/// HTTP client for the GitAlong Python backend.
 ///
-/// Every authenticated request sends the Supabase session JWT as
-/// `Authorization: Bearer <token>`.  All methods throw on failure so
-/// callers can implement their own fallback strategy.
+/// Only ranking, GitHub sync and account deletion go through the backend;
+/// core loops (profile, swipe, match, chat, safety) talk to Supabase
+/// directly so they keep working when the backend is cold or down.
+///
+/// Every authenticated request reads the access token from the live
+/// Supabase session right before sending it (tokens expire hourly).
 @lazySingleton
 class BackendApiClient {
   final SupabaseClient _supabase;
 
   BackendApiClient(this._supabase);
+
+  /// Shared in-flight GitHub refresh so concurrent callers (app start,
+  /// profile setup, "Refresh from GitHub") trigger a single request.
+  Future<Map<String, dynamic>>? _githubRefreshInFlight;
 
   String get _baseUrl =>
       dotenv.env['BACKEND_URL'] ?? 'https://gitalong-backend.onrender.com';
@@ -35,25 +42,15 @@ class BackendApiClient {
     return session.accessToken;
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
-
-  /// `GET /api/v1/health` — no auth required.
-  Future<bool> healthCheck() async {
-    try {
-      final res = await http
-          .get(Uri.parse('$_baseUrl/api/v1/health'))
-          .timeout(const Duration(seconds: 5));
-      return res.statusCode == 200;
-    } catch (_) {
-      return false;
-    }
-  }
+  // ── Recommendations ────────────────────────────────────────────────────────
 
   /// `GET /api/v1/recommendations?limit=N`
+  ///
+  /// Each user carries `match_score` (0–100), `match_reasons` and
+  /// `score_breakdown`, parsed by [UserModel.fromJson].
   Future<List<UserEntity>> getRecommendations({int limit = 20}) async {
     final token = _requireAccessToken();
-    final uri =
-        Uri.parse('$_baseUrl/api/v1/recommendations?limit=$limit');
+    final uri = Uri.parse('$_baseUrl/api/v1/recommendations?limit=$limit');
 
     final res = await http
         .get(uri, headers: _headers(token))
@@ -64,57 +61,39 @@ class BackendApiClient {
           'Backend /recommendations returned ${res.statusCode}: ${res.body}');
     }
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final list = data['recommendations'] as List<dynamic>;
+    final data = jsonDecode(res.body);
+    if (data is! Map) {
+      throw Exception('Backend /recommendations returned an unexpected body');
+    }
+    final list = data['recommendations'];
+    if (list is! List) return const [];
 
     AppLogger.i(
       'Backend: ${list.length} recommendations (algorithm: ${data['algorithm']})',
     );
 
     return list
-        .map((j) => UserModel.fromJson(j as Map<String, dynamic>).toEntity())
+        .whereType<Map>()
+        .map((j) => UserModel.fromJson(
+              j.map((key, value) => MapEntry(key.toString(), value)),
+            ).toEntity())
+        .where((u) => u.id.isNotEmpty)
         .toList();
   }
 
-  /// `GET /api/v1/users/me`
-  Future<UserEntity> getMe() async {
-    final token = _requireAccessToken();
-    final res = await http
-        .get(Uri.parse('$_baseUrl/api/v1/users/me'), headers: _headers(token))
-        .timeout(const Duration(seconds: 10));
+  // ── GitHub sync ────────────────────────────────────────────────────────────
 
-    if (res.statusCode != 200) {
-      throw Exception(
-          'Backend /users/me returned ${res.statusCode}: ${res.body}');
-    }
-
-    return UserModel.fromJson(
-      jsonDecode(res.body) as Map<String, dynamic>,
-    ).toEntity();
+  /// `POST /api/v1/users/me/refresh-github` → `{status, profile}`.
+  ///
+  /// Throws on failure (`503` when GitHub is unavailable; nothing is
+  /// overwritten in that case).
+  Future<Map<String, dynamic>> refreshGitHubStats() {
+    return _githubRefreshInFlight ??= _refreshGitHubStats().whenComplete(() {
+      _githubRefreshInFlight = null;
+    });
   }
 
-  /// `GET /api/v1/users/{userId}`
-  Future<UserEntity> getUser(String userId) async {
-    final token = _requireAccessToken();
-    final res = await http
-        .get(
-          Uri.parse('$_baseUrl/api/v1/users/$userId'),
-          headers: _headers(token),
-        )
-        .timeout(const Duration(seconds: 10));
-
-    if (res.statusCode != 200) {
-      throw Exception(
-          'Backend /users/$userId returned ${res.statusCode}: ${res.body}');
-    }
-
-    return UserModel.fromJson(
-      jsonDecode(res.body) as Map<String, dynamic>,
-    ).toEntity();
-  }
-
-  /// `POST /api/v1/users/me/refresh-github`
-  Future<Map<String, dynamic>> refreshGitHubStats() async {
+  Future<Map<String, dynamic>> _refreshGitHubStats() async {
     final token = _requireAccessToken();
     final res = await http
         .post(
@@ -128,163 +107,16 @@ class BackendApiClient {
           'Backend /refresh-github returned ${res.statusCode}: ${res.body}');
     }
 
-    return jsonDecode(res.body) as Map<String, dynamic>;
-  }
-
-  /// `POST /api/v1/notify-match` — tell backend a match was created so the other user gets a notification.
-  /// Does not throw on 4xx/5xx so match creation in Supabase remains successful; logs and returns.
-  Future<void> notifyNewMatch(
-    String matchId,
-    String notifyUserId,
-    String matcherName,
-  ) async {
-    try {
-      final token = _requireAccessToken();
-      final res = await http
-          .post(
-            Uri.parse('$_baseUrl/api/v1/notify-match'),
-            headers: _headers(token),
-            body: jsonEncode({
-              'match_id': matchId,
-              'notify_user_id': notifyUserId,
-              'matcher_name': matcherName,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode >= 400) {
-        AppLogger.w(
-          'Backend notify-match returned ${res.statusCode}: ${res.body}',
-        );
-      }
-    } catch (e, st) {
-      AppLogger.w('Backend notifyNewMatch failed', e, st);
-    }
-  }
-
-  // ── Swipes ──────────────────────────────────────────────────────────────────
-
-  /// `POST /api/v1/swipes` — record swipe on backend (populates CF signal).
-  /// Returns `{status, matched, match_id}`.
-  Future<Map<String, dynamic>?> recordSwipe({
-    required String swipedUserId,
-    required String action,
-  }) async {
-    try {
-      final token = _requireAccessToken();
-      final res = await http
-          .post(
-            Uri.parse('$_baseUrl/api/v1/swipes'),
-            headers: _headers(token),
-            body: jsonEncode({
-              'swiped_user_id': swipedUserId,
-              'action': action,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (res.statusCode == 201 || res.statusCode == 200) {
-        return jsonDecode(res.body) as Map<String, dynamic>;
-      }
-      AppLogger.w('Backend /swipes returned ${res.statusCode}: ${res.body}');
-      return null;
-    } catch (e, st) {
-      AppLogger.w('Backend recordSwipe failed', e, st);
-      return null;
-    }
-  }
-
-  // ── Matches ─────────────────────────────────────────────────────────────────
-
-  /// `GET /api/v1/matches`
-  Future<List<Map<String, dynamic>>> getMatches({int limit = 50}) async {
-    final token = _requireAccessToken();
-    final res = await http
-        .get(
-          Uri.parse('$_baseUrl/api/v1/matches?limit=$limit'),
-          headers: _headers(token),
-        )
-        .timeout(const Duration(seconds: 15));
-
-    if (res.statusCode != 200) {
-      throw Exception('Backend /matches returned ${res.statusCode}: ${res.body}');
-    }
-
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    return List<Map<String, dynamic>>.from(data['matches'] ?? []);
-  }
-
-  // ── Messages ────────────────────────────────────────────────────────────────
-
-  /// `GET /api/v1/matches/{matchId}/messages`
-  Future<List<Map<String, dynamic>>> getMessages({
-    required String matchId,
-    int limit = 50,
-  }) async {
-    final token = _requireAccessToken();
-    final res = await http
-        .get(
-          Uri.parse('$_baseUrl/api/v1/matches/$matchId/messages?limit=$limit'),
-          headers: _headers(token),
-        )
-        .timeout(const Duration(seconds: 10));
-
-    if (res.statusCode != 200) {
-      throw Exception('Backend /messages returned ${res.statusCode}: ${res.body}');
-    }
-
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    return List<Map<String, dynamic>>.from(data['messages'] ?? []);
-  }
-
-  /// `POST /api/v1/matches/{matchId}/messages`
-  Future<Map<String, dynamic>?> sendMessage({
-    required String matchId,
-    required String receiverId,
-    required String content,
-  }) async {
-    try {
-      final token = _requireAccessToken();
-      final res = await http
-          .post(
-            Uri.parse('$_baseUrl/api/v1/matches/$matchId/messages'),
-            headers: _headers(token),
-            body: jsonEncode({
-              'receiver_id': receiverId,
-              'content': content,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (res.statusCode == 201 || res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        return data['message'] as Map<String, dynamic>?;
-      }
-      AppLogger.w('Backend sendMessage returned ${res.statusCode}: ${res.body}');
-      return null;
-    } catch (e, st) {
-      AppLogger.w('Backend sendMessage failed', e, st);
-      return null;
-    }
-  }
-
-  /// `PUT /api/v1/matches/{matchId}/messages/read`
-  Future<void> markMessagesRead(String matchId) async {
-    try {
-      final token = _requireAccessToken();
-      await http
-          .put(
-            Uri.parse('$_baseUrl/api/v1/matches/$matchId/messages/read'),
-            headers: _headers(token),
-          )
-          .timeout(const Duration(seconds: 5));
-    } catch (e, st) {
-      AppLogger.w('Backend markMessagesRead failed', e, st);
-    }
+    final data = jsonDecode(res.body);
+    if (data is! Map) return <String, dynamic>{};
+    return data.map((key, value) => MapEntry(key.toString(), value));
   }
 
   // ── Account ─────────────────────────────────────────────────────────────────
 
   /// `DELETE /api/v1/users/me` — full server-side account deletion.
+  /// Returns false (never throws) so the caller can fall back to the
+  /// `delete_my_account` RPC.
   Future<bool> deleteAccount() async {
     try {
       final token = _requireAccessToken();
@@ -295,7 +127,10 @@ class BackendApiClient {
           )
           .timeout(const Duration(seconds: 30));
 
-      return res.statusCode == 200;
+      if (res.statusCode == 200 || res.statusCode == 204) return true;
+      AppLogger.w(
+          'Backend DELETE /users/me returned ${res.statusCode}: ${res.body}');
+      return false;
     } catch (e, st) {
       AppLogger.e('Backend deleteAccount failed', e, st);
       return false;

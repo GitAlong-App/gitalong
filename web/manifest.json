@@ -3,9 +3,9 @@
     "short_name": "GitAlong",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#6366F1",
-    "theme_color": "#6366F1",
-    "description": "Connect with developers through GitHub projects",
+    "background_color": "#0A0A0A",
+    "theme_color": "#00E676",
+    "description": "Find the developer your project is missing",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

@@ -4,99 +4,86 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../domain/entities/swipe_entity.dart';
 import '../../domain/entities/match_entity.dart';
 import '../../domain/repositories/swipe_repository.dart';
+import '../models/match_model.dart';
 import '../models/user_model.dart';
-import '../services/backend_api_client.dart';
 import '../../core/utils/logger.dart';
 
-/// Swipe repository implementation
+/// Swipe repository implementation.
+///
+/// Single write path: an upsert into `swipes`. A database trigger creates
+/// the match on a reciprocated like and notifies the other user; the client
+/// only ever reads `matches`.
 @LazySingleton(as: SwipeRepository)
 class SwipeRepositoryImpl implements SwipeRepository {
   final SupabaseClient _supabase;
-  final BackendApiClient _backendApiClient;
 
-  SwipeRepositoryImpl(this._supabase, this._backendApiClient);
+  SwipeRepositoryImpl(this._supabase);
+
+  String _requireUserId() {
+    final currentUser = _supabase.auth.currentUser;
+    if (currentUser == null) throw Exception('No user signed in');
+    return currentUser.id;
+  }
 
   @override
-  Future<void> swipeUser({
+  Future<MatchEntity?> swipeUser({
     required String swipedUserId,
     required SwipeAction action,
   }) async {
+    final myId = _requireUserId();
+
     try {
-      final currentUser = _supabase.auth.currentUser;
-      if (currentUser == null) throw Exception('No user signed in');
-
-      final swipe = {
-        'swiper_id': currentUser.id,
-        'swiped_user_id': swipedUserId,
-        'action': action.toString().split('.').last,
-        'swiped_at': DateTime.now().toIso8601String(),
-      };
-
-      await _supabase.from('swipes').insert(swipe);
-
-      // Also record on backend for recommendation engine CF signal (fire-and-forget)
-      _backendApiClient
-          .recordSwipe(
-            swipedUserId: swipedUserId,
-            action: action.toString().split('.').last,
-          )
-          .catchError((e) => AppLogger.w('Backend swipe sync failed: $e'));
+      await _supabase.from('swipes').upsert(
+        {
+          'swiper_id': myId,
+          'swiped_user_id': swipedUserId,
+          'action': action.name,
+        },
+        onConflict: 'swiper_id,swiped_user_id',
+      );
     } catch (e, stackTrace) {
       AppLogger.e('Error swiping user', e, stackTrace);
       rethrow;
+    }
+
+    if (action == SwipeAction.dislike) return null;
+
+    // The swipe is stored; a failed lookup must not look like a failed
+    // swipe. The match still shows up in the Matches tab.
+    try {
+      return await checkForMatch(swipedUserId);
+    } catch (e, stackTrace) {
+      AppLogger.w('Match lookup after swipe failed', e, stackTrace);
+      return null;
     }
   }
 
   @override
   Future<MatchEntity?> checkForMatch(String swipedUserId) async {
-    try {
-      final currentUser = _supabase.auth.currentUser;
-      if (currentUser == null) throw Exception('No user signed in');
+    final myId = _requireUserId();
 
-      // Check if the other user has also liked current user
-      final reverseSwipe = await _supabase
-          .from('swipes')
-          .select()
-          .eq('swiper_id', swipedUserId)
-          .eq('swiped_user_id', currentUser.id)
-          .inFilter('action', ['like', 'superLike'])
-          .limit(1)
-          .maybeSingle();
+    final matchRow = await _supabase
+        .from('matches')
+        .select()
+        .eq('pair_key', MatchModel.pairKey(myId, swipedUserId))
+        .maybeSingle();
 
-      if (reverseSwipe == null) return null;
+    if (matchRow == null) return null;
 
-      // Create a match
-      final matchData = {
-        'users': [currentUser.id, swipedUserId],
-        'matched_at': DateTime.now().toIso8601String(),
-      };
+    final profileRow = await _supabase
+        .from('public_profiles')
+        .select()
+        .eq('id', swipedUserId)
+        .maybeSingle();
 
-      final createdMatch = await _supabase
-          .from('matches')
-          .insert(matchData)
-          .select()
-          .single();
+    // Hidden (e.g. blocked in the meantime) — treat as no match.
+    if (profileRow == null) return null;
 
-      final userDoc = await _supabase
-          .from('users')
-          .select()
-          .eq('id', swipedUserId)
-          .maybeSingle();
-
-      if (userDoc != null) {
-        final userEntity = UserModel.fromJson(userDoc).toEntity();
-        return MatchEntity(
-          id: createdMatch['id'].toString(),
-          user: userEntity,
-          matchedAt: DateTime.parse(createdMatch['matched_at'] as String),
-          isRead: false,
-        );
-      }
-      return null;
-    } catch (e, stackTrace) {
-      AppLogger.e('Error checking for match', e, stackTrace);
-      rethrow;
-    }
+    return MatchModel.fromRow(
+      matchRow,
+      otherUser: UserModel.fromJson(profileRow).toEntity(),
+      myId: myId,
+    );
   }
 
   @override
@@ -105,26 +92,28 @@ class SwipeRepositoryImpl implements SwipeRepository {
     String? cursor,
   }) async {
     try {
-      final currentUser = _supabase.auth.currentUser;
-      if (currentUser == null) throw Exception('No user signed in');
+      final myId = _requireUserId();
 
       final response = await _supabase
           .from('swipes')
           .select()
-          .eq('swiper_id', currentUser.id)
+          .eq('swiper_id', myId)
           .order('swiped_at', ascending: false)
           .limit(limit);
 
       return response.map((data) {
+        final rawAction = data['action']?.toString();
+        final swipedAt = data['swiped_at'];
         return SwipeEntity(
           id: data['id']?.toString() ?? '',
-          swiperId: data['swiper_id'] as String,
-          swipedUserId: data['swiped_user_id'] as String,
+          swiperId: data['swiper_id']?.toString() ?? myId,
+          swipedUserId: data['swiped_user_id']?.toString() ?? '',
           action: SwipeAction.values.firstWhere(
-            (e) => e.toString().split('.').last == data['action'],
+            (e) => e.name == rawAction,
             orElse: () => SwipeAction.dislike,
           ),
-          swipedAt: DateTime.parse(data['swiped_at'] as String),
+          swipedAt: (swipedAt is String ? DateTime.tryParse(swipedAt) : null) ??
+              DateTime.now(),
         );
       }).toList();
     } catch (e, stackTrace) {
@@ -136,13 +125,12 @@ class SwipeRepositoryImpl implements SwipeRepository {
   @override
   Future<void> undoLastSwipe() async {
     try {
-      final currentUser = _supabase.auth.currentUser;
-      if (currentUser == null) throw Exception('No user signed in');
+      final myId = _requireUserId();
 
       final lastSwipe = await _supabase
           .from('swipes')
           .select('id')
-          .eq('swiper_id', currentUser.id)
+          .eq('swiper_id', myId)
           .order('swiped_at', ascending: false)
           .limit(1)
           .maybeSingle();
@@ -159,16 +147,16 @@ class SwipeRepositoryImpl implements SwipeRepository {
   @override
   Future<List<String>> getSwipedUserIds() async {
     try {
-      final currentUser = _supabase.auth.currentUser;
-      if (currentUser == null) throw Exception('No user signed in');
+      final myId = _requireUserId();
 
       final swipes = await _supabase
           .from('swipes')
           .select('swiped_user_id')
-          .eq('swiper_id', currentUser.id);
+          .eq('swiper_id', myId);
 
       return swipes
-          .map((doc) => doc['swiped_user_id'] as String)
+          .map((doc) => doc['swiped_user_id']?.toString())
+          .whereType<String>()
           .toList();
     } catch (e, stackTrace) {
       AppLogger.e('Error getting swiped user IDs', e, stackTrace);

@@ -1,43 +1,79 @@
-# GitAlong: Project Presentation Script 🎤
-**"Bridging the Gap Between Code and Connection"**
+# GitAlong: presentation script
+**"Find the developer your project is missing."**
 
 ---
 
-## 1. The Introduction (The "Hook")
-"Hi everyone. Today I’m presenting **GitAlong**. 
+## 1. The hook
+"Hi everyone, I'm presenting **GitAlong**.
 
-The concept is simple: think of it as 'Tinder for Developers.' But beneath that surface is a powerful machine-learning-driven engine that I built to solve a real problem: **Discovery Fatigue.** With 100 million developers on GitHub, finding the *right* person to collaborate with on a side project shouldn't feel like searching for a needle in a haystack. I wanted to build a tool that makes finding your next co-founder or contributor as easy as a swipe."
+Here's a problem every developer knows. You have an idea, or an open-source
+project, or a hackathon this weekend, and you need a specific person: a
+co-founder who can do what you can't, contributors, a teammate, or a mentor.
+Today you post in a Discord channel and hope, and when someone replies you
+can't tell whether they've actually built anything.
 
-## 2. The Tech Stack (The "Foundation")
-"For this project, I chose a high-performance, modern stack. 
-- On the **Frontend**, I used **Flutter** with the **BLoC** pattern. I followed strict **Clean Architecture** principles—separating my code into Data, Domain, and Presentation layers to ensure the app is actually maintainable and production-ready.
-- For the **Backend**, I built a dedicated **Python FastAPI** service. It's fully asynchronous and handles the heavy lifting of my recommendation logic.
-- My **Database** is powered by **Supabase**. I’m using Postgres with **Row-Level Security (RLS)** to make sure user data and private messages are 100% secure at the database level."
+GitAlong fixes that. You say what you're building and who you need, and it
+matches you with developers based on what they've actually shipped on GitHub.
+Then it tells you *why* you matched."
 
-## 3. The Core Innovation: My "Heavy" ML Engine
-"Now, let's talk about the 'brain' of the app. I didn't want to just match people by tags. I developed a **Hybrid Recommendation System** that uses two distinct streams:
+## 2. What makes it different
+"I started with the idea of 'Tinder for developers' and realised it was wrong in
+an important way. Dating apps match on *similarity*. But a team of five Rust
+developers isn't a team. Collaboration needs **compatible goals** and
+**complementary skills**.
 
-1. **First, I use Content-Based Filtering.** I’ve integrated **Scikit-Learn** in the backend. I use **TF-IDF Vectorization** to analyze the text of a user's interests. This calculates the **Cosine Similarity** between developers—meaning the app understands the *semantic relationship* between topics like 'Machine Learning' and 'TensorFlow.'
-2. **Second, I implemented Collaborative Filtering.** The engine learns from community behavior. If many high-quality developers 'like' a certain profile, my algorithm identifies that person as a 'community pillar' and surfaces them to other compatible users.
+So every GitAlong profile has:
+- **Intent**: co-founder, side-project partner, open-source, hackathon, mentor
+  or mentee.
+- **A pitch**: 280 characters on what you're building.
+- **Skills you're looking for**: what your partner should bring.
 
-I also solved a major data bias problem using **Log-Normalization**. This prevents 'celebrity' developers with thousands of stars from drowning out everyone else, ensuring that a talented junior and a senior architect both get fair, relevant matches."
+The ranking engine scores eight signals. Intent fit and skill complementarity
+together carry 40% of the weight. The rest is language overlap, shared
+interests (TF-IDF over interests and GitHub repo topics), a log-scaled activity
+tier so juniors meet peers, popularity, recency and location."
 
-## 4. Competitive Stats (The "Proof")
-"Here are the numbers that prove this works:
-- **Efficiency**: My recommendation engine can process and rank a pool of 500 candidates in **under 150 milliseconds**.
-- **Security**: I have **100% RLS coverage**. No user can ever peek into another person's swiped history or private chat.
-- **Accuracy**: My algorithm weights **Tech Stack at 40%** and **Semantic Interests at 20%**, specifically because my research showed that shared syntax is the number one predictor of a successful pair-programming session."
+## 3. The tech stack
+"- **Flutter** mobile app using BLoC and a clean-architecture split into data,
+  domain and presentation, plus a **React** web app on the same backend.
+- A **FastAPI** ranking service, with an optional **logistic-regression**
+  re-ranker trained on real like/dislike data using a chronological
+  train/validation split.
+- **Supabase Postgres** with row-level security.
 
-## 5. Live Demonstration (The "Moment")
-"*(Action: Show the app on your phone)*
-As you can see on my device, the interface is fluid. When I swipe right on a developer, the app doesn't just record a 'like'—it triggers a real-time check. If it's a match, I use **Supabase Realtime** to open a low-latency chat socket immediately. 
+One decision I'm proud of: the security rules live *in the database*. A
+database trigger creates a match only when two likes are mutual, and it's
+serialised with an advisory lock so two simultaneous likes can't miss each
+other. You can only message someone you've matched with. Emails are never
+exposed to other users, and nobody can see who swiped on them. An automated
+test suite runs the real migrations against Postgres and checks every one of
+these rules."
 
-I’ve also implemented a full **GitHub OAuth** flow. You log in with your real identity, and the app automatically pulls your repositories, languages, and stats to build your profile for you."
+## 4. Demo
+"*(Show the app)* I sign in with GitHub, and my languages come in automatically.
+I pick 'co-founder' and 'hackathon', write my pitch, and say I'm looking for a
+TypeScript developer.
 
-## 6. Closing (The "Vision")
-"To wrap up: GitAlong is more than just a swipe app. It's a professional-grade ecosystem built with a focus on **Machine Learning, Secure Architecture, and Real-Time Performance.** It’s ready to scale, it’s secure, and most importantly—it helps developers find their community.
+Each card shows the other person's pitch, what they're looking for, and three
+reasons we'd work well together. When we both swipe right, the database
+creates the match and notifies them, and the chat opens with openers based
+on our profiles. If anything goes wrong, I can unmatch, block or report from
+the chat menu."
 
-Thank you. I’m now open for any technical questions you might have."
+## 5. Measuring success
+"I don't measure success in swipes. The north-star metric is **qualified
+conversations**: matches where both people write and the thread reaches six
+messages. There's an admin metrics endpoint that reports it daily along with
+match rate and conversation rate."
+
+## 6. Where it goes next
+"The beachhead is hackathons, because every event needs teams right away. Next
+up are an event mode, push notifications, a moderation queue, and embedding-based
+matching over READMEs.
+
+GitAlong isn't about swiping. It's about getting from 'I need someone' to
+'we're building this together.' Thank you — happy to take questions."
 
 ---
-*Script prepared for the GitAlong Project Review - March 2026*
+*Numbers in this script are design parameters (weights, thresholds), not
+measured outcomes. Don't present unmeasured performance or research claims.*

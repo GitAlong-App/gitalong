@@ -1,23 +1,39 @@
-import 'dart:math' as math;
-
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
-import 'package:phosphor_flutter/phosphor_flutter.dart';
-import 'package:go_router/go_router.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:go_router/go_router.dart';
+import 'package:phosphor_flutter/phosphor_flutter.dart';
 
+import '../../../core/constants/achievements.dart';
+import '../../../core/constants/illustrations.dart';
 import '../../../core/di/injection.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_palette.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/theme/app_tokens.dart';
 import '../../../core/utils/feedback_service.dart';
+import '../../../domain/entities/progress_entity.dart';
+import '../../../domain/entities/user_entity.dart';
+import '../../../domain/usecases/progress/profile_strength.dart';
 import '../../bloc/profile/profile_bloc.dart';
 import '../../bloc/profile/profile_event.dart';
 import '../../bloc/profile/profile_state.dart';
+import '../../bloc/progress/progress_cubit.dart';
+import '../../bloc/progress/progress_state.dart';
+import '../../widgets/ui/ui.dart';
+import 'widgets/achievements_grid.dart';
+import 'widgets/equal_height_row.dart';
+import 'widgets/external_link.dart';
+import 'widgets/profile_about_tile.dart';
+import 'widgets/profile_checklist_tile.dart';
+import 'widgets/profile_header.dart';
+import 'widgets/profile_skeleton.dart';
+import 'widgets/stat_tile.dart';
 
-/// Profile screen — premium glassmorphic design
+/// The signed-in user's profile (a Home tab): avatar in a strength ring with
+/// the level badge, streak / XP / matches / stars, what's still missing, the
+/// pitch, achievements and chips. Pull to refresh.
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -25,627 +41,551 @@ class ProfileScreen extends StatefulWidget {
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-class _ProfileScreenState extends State<ProfileScreen>
-    with SingleTickerProviderStateMixin {
-  late ProfileBloc _profileBloc;
-  late AnimationController _animController;
+class _ProfileScreenState extends State<ProfileScreen> {
+  late final ProfileBloc _profileBloc;
+  late final ProgressCubit _progressCubit;
+
+  /// A profile has been shown; later errors appear as SnackBars instead of
+  /// replacing the screen.
+  bool _hasLoaded = false;
+  bool _refreshingGitHub = false;
 
   @override
   void initState() {
     super.initState();
     _profileBloc = getIt<ProfileBloc>()..add(LoadProfileEvent());
-    _animController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 8),
-    )..repeat();
+    _progressCubit = _resolveProgressCubit();
+  }
+
+  /// HomeScreen provides the shared cubit. The standalone `/profile` route
+  /// has no provider above it, so it falls back to the same DI instance.
+  ProgressCubit _resolveProgressCubit() {
+    try {
+      return context.read<ProgressCubit>();
+    } on ProviderNotFoundException {
+      return getIt<ProgressCubit>();
+    }
   }
 
   @override
   void dispose() {
-    _animController.dispose();
     _profileBloc.close();
     super.dispose();
   }
 
+  void _reload() => _profileBloc.add(LoadProfileEvent());
+
+  /// Reloads the profile and progress; the spinner stays until both have
+  /// settled (or a timeout passes).
+  Future<void> _onPullToRefresh() async {
+    final settled = _profileBloc.stream.firstWhere(
+      (state) => state is ProfileLoaded || state is ProfileError,
+      orElse: () => _profileBloc.state,
+    );
+    _reload();
+    final progressDone = _progressCubit.refresh();
+    await settled.timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => _profileBloc.state,
+    );
+    await progressDone.timeout(const Duration(seconds: 10), onTimeout: () {});
+  }
+
+  void _refreshFromGitHub() {
+    if (_refreshingGitHub) return;
+    setState(() => _refreshingGitHub = true);
+    _profileBloc.add(RefreshGitHubEvent());
+  }
+
+  Future<void> _openSettings() async {
+    FeedbackService.onButtonPress();
+    await context.push(RoutePaths.settings);
+    // Settings links to Edit Profile: pick up changes made there.
+    if (mounted) _reload();
+  }
+
+  Future<void> _openEditProfile() async {
+    await context.push(RoutePaths.editProfile);
+    if (mounted) _reload();
+  }
+
+  void _onProfileState(BuildContext context, ProfileState state) {
+    if (state is ProfileLoaded) {
+      if (_refreshingGitHub) {
+        setState(() => _refreshingGitHub = false);
+        // New languages or a bio from GitHub can change progress.
+        _progressCubit.refresh();
+        showGaToast(
+          context,
+          title: 'Refreshed from GitHub',
+          message: 'Your repos, stars and languages are up to date.',
+        );
+      }
+      _hasLoaded = true;
+    } else if (state is ProfileError && _hasLoaded) {
+      if (_refreshingGitHub) setState(() => _refreshingGitHub = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(state.message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return BlocProvider.value(
       value: _profileBloc,
       child: Scaffold(
-        extendBodyBehindAppBar: true,
         appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
           title: const Text('Profile'),
           actions: [
             IconButton(
-              icon: Icon(PhosphorIconsRegular.gear, size: 24.sp),
-              onPressed: () {
-                FeedbackService.onButtonPress();
-                context.push(RoutePaths.settings);
-              },
+              tooltip: 'Settings',
+              icon: const Icon(PhosphorIconsBold.gear),
+              onPressed: _openSettings,
             ),
+            const SizedBox(width: AppTokens.space4),
           ],
         ),
-        body: BlocBuilder<ProfileBloc, ProfileState>(
+        body: BlocConsumer<ProfileBloc, ProfileState>(
+          listener: _onProfileState,
+          // Keep the current profile on screen while refreshing or when a
+          // refresh fails.
+          buildWhen: (previous, current) =>
+              current is! ProfileUpdating &&
+              !(_hasLoaded &&
+                  (current is ProfileLoading || current is ProfileError)),
           builder: (context, state) {
-            if (state is ProfileLoading) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            if (state is ProfileError) {
-              return Center(child: Text('Error: ${state.message}'));
-            }
-
-            if (state is ProfileLoaded) {
-              return _buildProfile(context, state, colors, isDark);
-            }
-
-            return const SizedBox.shrink();
+            if (state is ProfileLoaded) return _buildProfile(context, state);
+            if (state is ProfileError) return _buildError(state.message);
+            return const ProfileSkeleton();
           },
         ),
       ),
     );
   }
 
-  Widget _buildProfile(
-    BuildContext context,
-    ProfileLoaded state,
-    ColorScheme colors,
-    bool isDark,
-  ) {
-    final user = state.user;
-    final matchCount = state.matchCount;
-    final chatCount = state.chatCount;
-
+  Widget _buildError(String message) {
     return RefreshIndicator(
-      onRefresh: () async => _profileBloc.add(LoadProfileEvent()),
-      child: SingleChildScrollView(
+      onRefresh: _onPullToRefresh,
+      color: AppColors.green,
+      child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        child: Column(
-          children: [
-            // ── Hero header with gradient bg ──
-            _buildHeroHeader(context, user, isDark),
-
-            // ── Stats row (glassmorphic cards) ──
-            Transform.translate(
-              offset: Offset(0, -30.h),
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20.w),
-                child: _GlassStatsRow(
-                  matchCount: matchCount,
-                  chatCount: chatCount,
-                  repoCount: user.publicRepos,
-                  followers: user.followers,
-                ),
-              ),
-            ),
-
-            // ── Languages section ──
-            if (user.languages.isNotEmpty)
-              Padding(
-                padding: EdgeInsets.symmetric(horizontal: 20.w),
-                child: _LanguagesSection(languages: user.languages),
-              ),
-
-            SizedBox(height: 16.h),
-
-            // ── Quick actions ──
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 20.w),
-              child: _QuickActions(
-                githubUrl: user.githubUrl,
-                onEditProfile: () async {
-                  FeedbackService.onButtonPress();
-                  await context.push(RoutePaths.editProfile);
-                  if (context.mounted) {
-                    _profileBloc.add(LoadProfileEvent());
-                  }
-                },
-              ),
-            ),
-
-            SizedBox(height: 40.h),
-          ],
+        padding: const EdgeInsets.fromLTRB(
+          AppTokens.gutter,
+          AppTokens.space40,
+          AppTokens.gutter,
+          AppTokens.space40,
         ),
-      ),
-    );
-  }
-
-  Widget _buildHeroHeader(BuildContext context, dynamic user, bool isDark) {
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.only(
-        top: MediaQuery.of(context).padding.top + kToolbarHeight + 8.h,
-        bottom: 50.h,
-      ),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: isDark
-              ? [
-                  const Color(0xFF1A2E1A),
-                  const Color(0xFF0D1F0D),
-                  const Color(0xFF0A0A0A),
-                ]
-              : [
-                  AppColors.primary.withValues(alpha: 0.15),
-                  AppColors.primary.withValues(alpha: 0.05),
-                  Colors.white,
-                ],
-        ),
-      ),
-      child: Column(
         children: [
-          // Animated avatar ring
-          AnimatedBuilder(
-            animation: _animController,
-            builder: (context, child) {
-              return Container(
-                width: 130.w,
-                height: 130.w,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: SweepGradient(
-                    startAngle: _animController.value * 2 * math.pi,
-                    colors: [
-                      AppColors.primary,
-                      AppColors.primary.withValues(alpha: 0.3),
-                      const Color(0xFF10B981),
-                      AppColors.primary.withValues(alpha: 0.3),
-                      AppColors.primary,
-                    ],
-                  ),
-                ),
-                padding: EdgeInsets.all(3.w),
-                child: Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Theme.of(context).scaffoldBackgroundColor,
-                  ),
-                  padding: EdgeInsets.all(3.w),
-                  child: ClipOval(
-                    child: (user.avatarUrl != null &&
-                            user.avatarUrl!.isNotEmpty)
-                        ? CachedNetworkImage(
-                            imageUrl: user.avatarUrl!,
-                            fit: BoxFit.cover,
-                            placeholder: (_, __) => Container(
-                              color: AppColors.primary.withValues(alpha: 0.1),
-                              child: Icon(PhosphorIconsRegular.user,
-                                  size: 50.sp, color: AppColors.primary),
-                            ),
-                            errorWidget: (_, __, ___) => Container(
-                              color: AppColors.primary.withValues(alpha: 0.1),
-                              child: Icon(PhosphorIconsRegular.user,
-                                  size: 50.sp, color: AppColors.primary),
-                            ),
-                          )
-                        : Container(
-                            color: AppColors.primary.withValues(alpha: 0.1),
-                            child: Icon(PhosphorIconsRegular.user,
-                                size: 50.sp, color: AppColors.primary),
-                          ),
-                  ),
-                ),
-              );
-            },
+          EmptyState(
+            illustration: Illustrations.octopus,
+            title: "Couldn't load your profile",
+            message: message,
+            actionLabel: 'Try again',
+            onAction: _reload,
           ),
-
-          SizedBox(height: 16.h),
-
-          // Name
-          Text(
-            user.name ?? user.username,
-            style: AppTextStyles.headlineSmall(
-              Theme.of(context).colorScheme.onSurface,
-            ),
-          ),
-
-          SizedBox(height: 4.h),
-
-          // Username badge
-          Container(
-            padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 4.h),
-            decoration: BoxDecoration(
-              color: AppColors.primary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(20.r),
-              border: Border.all(
-                color: AppColors.primary.withValues(alpha: 0.3),
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(PhosphorIconsRegular.githubLogo,
-                    size: 14.sp, color: AppColors.primary),
-                SizedBox(width: 6.w),
-                Text(
-                  '@${user.username}',
-                  style: AppTextStyles.labelMedium(AppColors.primary),
-                ),
-              ],
-            ),
-          ),
-
-          if (user.bio != null && user.bio!.isNotEmpty) ...[
-            SizedBox(height: 12.h),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 40.w),
-              child: Text(
-                user.bio!,
-                style: AppTextStyles.bodyMedium(
-                  Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-                textAlign: TextAlign.center,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
-
-          if (user.location != null && user.location!.isNotEmpty) ...[
-            SizedBox(height: 8.h),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(PhosphorIconsRegular.mapPin,
-                    size: 14.sp,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant),
-                SizedBox(width: 4.w),
-                Text(
-                  user.location!,
-                  style: AppTextStyles.bodySmall(
-                    Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ],
         ],
       ),
     );
   }
+
+  Widget _buildProfile(BuildContext context, ProfileLoaded state) {
+    final user = state.user;
+    final strength = profileStrength(user);
+    final missing = [
+      for (final check in ProfileChecks.all)
+        if (strength.missing.contains(check.key)) check,
+    ];
+    final pitch = user.pitch?.trim() ?? '';
+
+    return BlocBuilder<ProgressCubit, ProgressState>(
+      bloc: _progressCubit,
+      builder: (context, progressState) {
+        final loaded = progressState is ProgressLoaded ? progressState : null;
+        final progress = loaded?.progress;
+        final progressPending = progressState is ProgressInitial;
+
+        final sections = <Widget>[
+          ProfileHeader(
+            key: const ValueKey('header'),
+            user: user,
+            strengthDone: strength.done,
+            strengthTotal: strength.total,
+            level: progress?.level,
+          ),
+          _StatsSection(
+            key: const ValueKey('stats'),
+            user: user,
+            matchCount: state.matchCount,
+            chatCount: state.chatCount,
+            progress: progress,
+            pending: progressPending,
+          ),
+          if (strength.done < strength.total)
+            ProfileChecklistTile(
+              key: const ValueKey('checklist'),
+              done: strength.done,
+              total: strength.total,
+              missing: missing,
+              onEdit: _openEditProfile,
+              onRefreshGitHub: _refreshFromGitHub,
+              refreshingGitHub: _refreshingGitHub,
+              showXpReward: progress != null && !progress.profileComplete,
+            ),
+          if (pitch.isNotEmpty)
+            _PitchTile(key: const ValueKey('pitch'), pitch: pitch),
+          if (loaded != null)
+            _AchievementsSection(
+              key: const ValueKey('achievements'),
+              progress: loaded.progress,
+              newKeys: loaded.newAchievements,
+            )
+          else if (progressPending)
+            const _AchievementsSkeleton(key: ValueKey('achievements-loading')),
+          if (ProfileAboutTile.hasContent(user))
+            ProfileAboutTile(key: const ValueKey('about'), user: user),
+          _ProfileActions(
+            key: const ValueKey('actions'),
+            githubUrl: user.githubUrl,
+            refreshingGitHub: _refreshingGitHub,
+            onEditProfile: _openEditProfile,
+            onRefreshGitHub: _refreshFromGitHub,
+          ),
+        ];
+
+        return RefreshIndicator(
+          onRefresh: _onPullToRefresh,
+          color: AppColors.green,
+          backgroundColor: context.palette.card,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(
+              AppTokens.gutter,
+              AppTokens.space16,
+              AppTokens.gutter,
+              AppTokens.space40,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (var i = 0; i < sections.length; i++)
+                  Padding(
+                    key: sections[i].key,
+                    padding: EdgeInsets.only(
+                      top: i == 0 ? 0 : AppTokens.space24,
+                    ),
+                    child: _entrance(context, i, sections[i]),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Fade + slide up, staggered; skipped under reduced motion.
+  Widget _entrance(BuildContext context, int index, Widget child) {
+    if (AppTokens.reduceMotion(context)) return child;
+    return child
+        .animate(delay: AppTokens.stagger * index)
+        .fadeIn(duration: AppTokens.medium, curve: AppTokens.curve)
+        .moveY(
+          begin: AppTokens.entranceOffset,
+          end: 0,
+          duration: AppTokens.medium,
+          curve: AppTokens.curve,
+        );
+  }
 }
 
-/// Glassmorphic stats row
-class _GlassStatsRow extends StatelessWidget {
-  final int matchCount;
-  final int chatCount;
-  final int repoCount;
-  final int followers;
-
-  const _GlassStatsRow({
+/// Streak and XP (when progress is available), matches and stars.
+class _StatsSection extends StatelessWidget {
+  const _StatsSection({
+    super.key,
+    required this.user,
     required this.matchCount,
     required this.chatCount,
-    required this.repoCount,
-    required this.followers,
+    required this.progress,
+    required this.pending,
   });
 
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+  final UserEntity user;
+  final int matchCount;
+  final int chatCount;
 
-    return Container(
-      padding: EdgeInsets.symmetric(vertical: 20.h, horizontal: 8.w),
-      decoration: BoxDecoration(
-        color: isDark
-            ? Colors.white.withValues(alpha: 0.06)
-            : Colors.white.withValues(alpha: 0.9),
-        borderRadius: BorderRadius.circular(20.r),
-        border: Border.all(
-          color: isDark
-              ? Colors.white.withValues(alpha: 0.1)
-              : Colors.grey.shade200,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.08),
-            blurRadius: 20,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _GlassStat(
-            icon: PhosphorIconsFill.heart,
-            value: matchCount.toString(),
-            label: 'Matches',
-            color: const Color(0xFFEF4444),
-          ),
-          _divider(context),
-          _GlassStat(
-            icon: PhosphorIconsFill.chatCircle,
-            value: chatCount.toString(),
-            label: 'Chats',
-            color: const Color(0xFF3B82F6),
-          ),
-          _divider(context),
-          _GlassStat(
-            icon: PhosphorIconsFill.gitBranch,
-            value: repoCount.toString(),
-            label: 'Repos',
-            color: AppColors.primary,
-          ),
-          _divider(context),
-          _GlassStat(
-            icon: PhosphorIconsFill.users,
-            value: followers.toString(),
-            label: 'Followers',
-            color: const Color(0xFFA855F7),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _divider(BuildContext context) {
-    return Container(
-      width: 1,
-      height: 40.h,
-      color: Theme.of(context).dividerColor.withValues(alpha: 0.3),
-    );
-  }
-}
-
-class _GlassStat extends StatelessWidget {
-  final IconData icon;
-  final String value;
-  final String label;
-  final Color color;
-
-  const _GlassStat({
-    required this.icon,
-    required this.value,
-    required this.label,
-    required this.color,
-  });
+  /// Null while progress is loading ([pending]) or unavailable.
+  final ProgressEntity? progress;
+  final bool pending;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Container(
-          width: 40.w,
-          height: 40.w,
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(12.r),
-          ),
-          child: Icon(icon, size: 20.sp, color: color),
-        ),
-        SizedBox(height: 8.h),
-        Text(
-          value,
-          style: AppTextStyles.titleMedium(
-            Theme.of(context).colorScheme.onSurface,
-          ),
-        ),
-        SizedBox(height: 2.h),
-        Text(
-          label,
-          style: AppTextStyles.labelSmall(
-            Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// Languages as colorful progress-style chips
-class _LanguagesSection extends StatelessWidget {
-  final List<String> languages;
-  const _LanguagesSection({required this.languages});
-
-  static const _langColors = <String, Color>{
-    'javascript': Color(0xFFF7DF1E),
-    'typescript': Color(0xFF3178C6),
-    'python': Color(0xFF3776AB),
-    'dart': Color(0xFF0175C2),
-    'java': Color(0xFFED8B00),
-    'kotlin': Color(0xFF7F52FF),
-    'swift': Color(0xFFF05138),
-    'go': Color(0xFF00ADD8),
-    'rust': Color(0xFFDEA584),
-    'c++': Color(0xFF00599C),
-    'c#': Color(0xFF239120),
-    'ruby': Color(0xFFCC342D),
-    'php': Color(0xFF777BB4),
-    'html': Color(0xFFE34F26),
-    'css': Color(0xFF1572B6),
-    'shell': Color(0xFF89E051),
-    'c': Color(0xFFA8B9CC),
-  };
-
-  Color _getColor(String lang) {
-    return _langColors[lang.toLowerCase()] ?? AppColors.primary;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
+    final progress = this.progress;
+    final rows = <Widget>[
+      if (progress != null)
+        EqualHeightRow(
+          spacing: AppTokens.space12,
           children: [
-            Icon(PhosphorIconsFill.code, size: 18.sp, color: AppColors.primary),
-            SizedBox(width: 8.w),
-            Text(
-              'Tech Stack',
-              style: AppTextStyles.titleSmall(
-                Theme.of(context).colorScheme.onSurface,
-              ),
-            ),
+            _streakTile(context, progress),
+            _xpTile(context, progress),
           ],
-        ),
-        SizedBox(height: 12.h),
-        Wrap(
-          spacing: 8.w,
-          runSpacing: 8.h,
-          children: languages
-              .take(12)
-              .map((lang) => _LanguageChip(
-                    language: lang,
-                    color: _getColor(lang),
-                  ))
-              .toList(),
-        ),
-      ],
-    );
-  }
-}
-
-class _LanguageChip extends StatelessWidget {
-  final String language;
-  final Color color;
-
-  const _LanguageChip({required this.language, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: EdgeInsets.symmetric(horizontal: 12.w, vertical: 8.h),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(12.r),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
+        )
+      else if (pending)
+        const StatSkeletonRow(),
+      EqualHeightRow(
+        spacing: AppTokens.space12,
+        children: [_matchesTile(context), _starsTile(context)],
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 8.w,
-            height: 8.w,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-            ),
-          ),
-          SizedBox(width: 6.w),
-          Text(
-            language,
-            style: AppTextStyles.labelMedium(
-              Theme.of(context).colorScheme.onSurface,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Quick action buttons
-class _QuickActions extends StatelessWidget {
-  final String? githubUrl;
-  final VoidCallback onEditProfile;
-
-  const _QuickActions({
-    required this.githubUrl,
-    required this.onEditProfile,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Edit profile — primary action
-        Container(
-          decoration: BoxDecoration(
-            gradient: AppColors.primaryGradient,
-            borderRadius: BorderRadius.circular(16.r),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.primary.withValues(alpha: 0.3),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: Material(
-            color: Colors.transparent,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(16.r),
-              onTap: onEditProfile,
-              child: Padding(
-                padding: EdgeInsets.symmetric(vertical: 16.h),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(PhosphorIconsRegular.pencilSimple,
-                        size: 20.sp, color: Colors.white),
-                    SizedBox(width: 8.w),
-                    Text(
-                      'Edit Profile',
-                      style: AppTextStyles.titleSmall(Colors.white),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
+        const SectionHeader(title: 'Statistics'),
+        const SizedBox(height: AppTokens.space12),
+        for (var i = 0; i < rows.length; i++) ...[
+          if (i > 0) const SizedBox(height: AppTokens.space12),
+          rows[i],
+        ],
+      ],
+    );
+  }
 
-        if (githubUrl != null) ...[
-          SizedBox(height: 12.h),
-          Container(
-            decoration: BoxDecoration(
-              color: isDark
-                  ? Colors.white.withValues(alpha: 0.06)
-                  : Colors.grey.shade50,
-              borderRadius: BorderRadius.circular(16.r),
-              border: Border.all(
-                color: isDark
-                    ? Colors.white.withValues(alpha: 0.1)
-                    : Colors.grey.shade200,
-              ),
-            ),
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(16.r),
-                onTap: () {
-                  FeedbackService.onButtonPress();
-                  launchUrl(Uri.parse(githubUrl!),
-                      mode: LaunchMode.externalApplication);
-                },
-                child: Padding(
-                  padding: EdgeInsets.symmetric(vertical: 16.h),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(PhosphorIconsRegular.githubLogo,
-                          size: 20.sp,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant),
-                      SizedBox(width: 8.w),
-                      Text(
-                        'View on GitHub',
-                        style: AppTextStyles.titleSmall(
-                          Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                      SizedBox(width: 4.w),
-                      Icon(PhosphorIconsRegular.arrowSquareOut,
-                          size: 16.sp,
-                          color:
-                              Theme.of(context).colorScheme.onSurfaceVariant),
-                    ],
+  Widget _footerText(BuildContext context, String text, {Color? color}) {
+    return Text(
+      text,
+      style: AppTextStyles.bodySm(color ?? context.palette.inkMuted),
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
+  Widget _streakTile(BuildContext context, ProgressEntity progress) {
+    final days = progress.streakDays;
+    final String hint;
+    Color? hintColor;
+    if (days == 0) {
+      hint = 'Swipe today to start one';
+    } else if (progress.isStreakAtRisk) {
+      hint = 'Swipe today to keep it!';
+      hintColor = context.palette.toneText(AppTone.flame);
+    } else {
+      hint = 'Best: ${plural(progress.bestStreak, 'day')}';
+    }
+
+    return StatTile(
+      illustration: Illustrations.fire,
+      value: days,
+      label: 'Day streak',
+      grayscale: !progress.activeToday,
+      semanticLabel: '$days day streak. $hint',
+      footer: _footerText(context, hint, color: hintColor),
+    );
+  }
+
+  Widget _xpTile(BuildContext context, ProgressEntity progress) {
+    final nextLevel = progress.level + 1;
+    final toGo = '${progress.xpToNextLevel} XP to level $nextLevel';
+
+    return StatTile(
+      illustration: Illustrations.highVoltage,
+      value: progress.xp,
+      label: 'Total XP',
+      semanticLabel:
+          '${progress.xp} total XP. Level ${progress.level}, $toGo',
+      footer: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          GaProgressBar(
+            value: progress.levelProgress,
+            tone: AppTone.gold,
+            height: 10,
+            animateOnMount: true,
+          ),
+          const SizedBox(height: 6),
+          _footerText(context, toGo),
+        ],
+      ),
+    );
+  }
+
+  Widget _matchesTile(BuildContext context) {
+    final chats = plural(chatCount, 'conversation');
+    return StatTile(
+      illustration: Illustrations.handshake,
+      value: matchCount,
+      label: 'Matches',
+      semanticLabel: '${plural(matchCount, 'match', 'matches')}, $chats',
+      footer: _footerText(context, chats),
+    );
+  }
+
+  Widget _starsTile(BuildContext context) {
+    final repos = plural(user.publicRepos, 'public repo');
+    return StatTile(
+      illustration: Illustrations.glowingStar,
+      value: user.totalStars,
+      label: 'GitHub stars',
+      semanticLabel: '${plural(user.totalStars, 'GitHub star')}, $repos',
+      footer: _footerText(context, repos),
+    );
+  }
+}
+
+/// "What I'm building".
+class _PitchTile extends StatelessWidget {
+  const _PitchTile({super.key, required this.pitch});
+
+  final String pitch;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = context.palette;
+    return GaTile(
+      padding: const EdgeInsets.all(AppTokens.space16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Illustration(Illustrations.rocket, size: 28),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Semantics(
+                  header: true,
+                  child: Text(
+                    "WHAT I'M BUILDING",
+                    style: AppTextStyles.caption(palette.inkMuted),
                   ),
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '“$pitch”',
+            style: AppTextStyles.body(palette.ink).copyWith(
+              fontWeight: FontWeight.w700,
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _AchievementsSection extends StatelessWidget {
+  const _AchievementsSection({
+    super.key,
+    required this.progress,
+    required this.newKeys,
+  });
+
+  final ProgressEntity progress;
+
+  /// Achievements unlocked since last seen: they get the kit's one-off
+  /// highlight (the toast itself is HomeScreen's job).
+  final List<String> newKeys;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = Achievements.all.length;
+    final unlocked =
+        Achievements.all.where((a) => progress.hasAchievement(a.key)).length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SectionHeader(
+          title: 'Achievements',
+          subtitle: '$unlocked of $total unlocked',
+        ),
+        const SizedBox(height: AppTokens.space12),
+        AchievementsGrid(
+          isUnlocked: progress.hasAchievement,
+          isNew: newKeys.contains,
+        ),
+      ],
+    );
+  }
+}
+
+class _AchievementsSkeleton extends StatelessWidget {
+  const _AchievementsSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SectionHeader(title: 'Achievements'),
+        const SizedBox(height: AppTokens.space12),
+        ExcludeSemantics(
+          child: EqualHeightRow(
+            spacing: AppTokens.space12,
+            children: [
+              for (var i = 0; i < 3; i++)
+                GaSkeleton(height: 120, radius: AppTokens.radiusLg),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Edit profile (secondary), View on GitHub and Refresh from GitHub.
+class _ProfileActions extends StatelessWidget {
+  const _ProfileActions({
+    super.key,
+    required this.githubUrl,
+    required this.refreshingGitHub,
+    required this.onEditProfile,
+    required this.onRefreshGitHub,
+  });
+
+  final String? githubUrl;
+  final bool refreshingGitHub;
+  final VoidCallback onEditProfile;
+  final VoidCallback onRefreshGitHub;
+
+  @override
+  Widget build(BuildContext context) {
+    final githubUrl = this.githubUrl;
+    final hasGitHub = githubUrl != null && githubUrl.trim().isNotEmpty;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        PressableButton(
+          label: 'Edit profile',
+          variant: PressableVariant.secondary,
+          icon: PhosphorIconsBold.pencilSimple,
+          onPressed: onEditProfile,
+        ),
+        if (hasGitHub) ...[
+          const SizedBox(height: AppTokens.space12),
+          PressableButton(
+            label: 'View on GitHub',
+            variant: PressableVariant.ghost,
+            icon: PhosphorIconsBold.githubLogo,
+            trailingIcon: PhosphorIconsBold.arrowSquareOut,
+            semanticLabel: 'View on GitHub, opens in your browser',
+            onPressed: () => openExternalLink(context, githubUrl),
+          ),
+        ],
+        const SizedBox(height: AppTokens.space8),
+        // Re-sync repos, stars and languages from GitHub (backend-owned).
+        PressableButton(
+          label: refreshingGitHub ? 'Refreshing…' : 'Refresh from GitHub',
+          variant: PressableVariant.ghost,
+          icon: PhosphorIconsBold.arrowClockwise,
+          loading: refreshingGitHub,
+          onPressed: onRefreshGitHub,
+        ),
       ],
     );
   }

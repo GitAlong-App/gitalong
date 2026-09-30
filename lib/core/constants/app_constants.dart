@@ -4,8 +4,8 @@ class AppConstants {
 
   // App Info
   static const String appName = 'GitAlong';
-  static const String appVersion = '1.0.0';
-  static const String appDescription = 'Tinder for developers';
+  static const String appVersion = '1.1.0';
+  static const String appDescription = 'Find the developer your project is missing';
 
   // Design Constants
   static const double designWidth = 375.0;
@@ -31,20 +31,16 @@ class AppConstants {
   static const Duration animationNormal = Duration(milliseconds: 300);
   static const Duration animationSlow = Duration(milliseconds: 500);
 
-  // API
-  static const String githubApiBaseUrl = 'https://api.github.com';
-  static const int apiTimeout = 30000; // 30 seconds
-
   // Storage Keys
   static const String accessTokenKey = 'access_token';
   static const String refreshTokenKey = 'refresh_token';
   static const String userIdKey = 'user_id';
   static const String themeKey = 'theme_mode';
+  static const String hasSeenOnboardingKey = 'has_seen_onboarding';
 
   // Hive Boxes
   static const String userBox = 'user_box';
   static const String settingsBox = 'settings_box';
-  static const String cacheBox = 'cache_box';
 
   // Swipe Card Settings
   static const double swipeThreshold = 0.3;

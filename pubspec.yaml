@@ -1,7 +1,7 @@
 name: gitalong
-description: "GitAlong - Tinder for developers, connecting through GitHub projects"
+description: "GitAlong - Find the developer your project is missing. Intent-based collaboration matching backed by real GitHub work."
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: '>=3.7.0 <4.0.0'
@@ -10,73 +10,50 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  
+
   # State Management
   flutter_bloc: ^8.1.6
   bloc: ^8.1.4
   equatable: ^2.0.7
-  
+
   # Dependency Injection
   get_it: ^8.0.2
   injectable: ^2.5.0
-  
+
   # Navigation
   go_router: ^16.2.0
-  
+
   # Responsive Design
   flutter_screenutil: ^5.9.3
-  
+
   # Animations
   flutter_animate: ^4.5.2
-  lottie: ^3.3.1
-  
+
   # UI Components
-  card_swiper: ^3.0.1
-  swipe_cards: ^2.0.0+1
   cached_network_image: ^3.4.1
-  flutter_staggered_grid_view: ^0.6.2
-  
+
   # Networking
-  dio: ^5.9.0
   http: ^1.5.0
-  
+
   # Local Storage
   hive: ^2.2.3
   hive_flutter: ^1.1.0
-  flutter_secure_storage: ^9.2.4
-  
+
   # Backend
   supabase_flutter: ^2.8.2
   google_sign_in: ^6.2.1
   sign_in_with_apple: ^6.1.4
-  
-  # Notifications
-  flutter_local_notifications: ^19.4.1
-  
+
   # Utilities
-  uuid: ^4.5.1
   logger: ^2.6.1
-  intl: ^0.20.2
   path_provider: ^2.1.5
-  permission_handler: ^11.4.0
-  device_info_plus: ^11.5.0
   package_info_plus: ^8.3.0
-  connectivity_plus: ^6.1.5
   url_launcher: ^6.3.2
-  image_picker: ^1.2.0
-  vibration: ^2.1.0
-  
+
   # Fonts & Icons
   google_fonts: ^6.3.0
   phosphor_flutter: ^2.1.0
-  
-  # Code Generation
-  json_annotation: ^4.9.0
-  
-  # Security
-  crypto: ^3.0.6
-  local_auth: ^2.3.0
-  
+
   # Environment
   flutter_dotenv: ^6.0.0
   app_links: ^6.4.1
@@ -84,39 +61,34 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  
+
   # Code Generation
   build_runner: ^2.5.4
   injectable_generator: ^2.6.2
-  json_serializable: ^6.9.5
-  
+
   # Testing
   mockito: ^5.4.6
   bloc_test: ^9.1.7
   integration_test:
     sdk: flutter
-  
+
   # Linting
   flutter_lints: ^3.0.2
-  
+
   # App Icons & Splash
   flutter_launcher_icons: ^0.14.4
   flutter_native_splash: ^2.4.6
 
 flutter:
   uses-material-design: true
-  
+
   assets:
     - assets/images/
     - assets/animations/
     - assets/app_icon/
+    - assets/illustrations/
     - assets/icons/
     - .env
-  
-  fonts:
-    - family: JetBrainsMono
-      fonts:
-        - asset: assets/fonts/JetBrainsMono-Regular.ttf
 
 flutter_launcher_icons:
   android: "launcher_icon"
@@ -126,8 +98,8 @@ flutter_launcher_icons:
   web:
     generate: true
     image_path: "assets/app_icon/app_icon.jpg"
-    background_color: "#6366F1"
-    theme_color: "#6366F1"
+    background_color: "#0A0A0A"
+    theme_color: "#00E676"
   windows:
     generate: true
     image_path: "assets/app_icon/app_icon.jpg"

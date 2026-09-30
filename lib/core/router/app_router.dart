@@ -1,8 +1,15 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 
+import '../constants/app_constants.dart';
+import '../di/injection.dart';
 import '../../presentation/bloc/auth/auth_bloc.dart';
 import '../../presentation/bloc/auth/auth_state.dart';
+import '../../presentation/bloc/matches/matches_bloc.dart';
+import '../../presentation/bloc/matches/matches_event.dart';
 import '../../presentation/screens/splash_screen.dart';
 import '../../presentation/screens/onboarding_screen.dart';
 import '../../presentation/screens/auth/login_screen.dart';
@@ -23,55 +30,77 @@ import 'go_router_refresh_stream.dart';
 class AppRouter {
   AppRouter._();
 
-  static GoRouter createRouter(AuthBloc authBloc, bool hasSeenOnboarding) {
+  /// Read live on every redirect (the settings box is opened in main before
+  /// the router is created), so finishing onboarding takes effect without a
+  /// restart.
+  static bool _hasSeenOnboarding() {
+    try {
+      if (!Hive.isBoxOpen(AppConstants.settingsBox)) return false;
+      final value = Hive.box(AppConstants.settingsBox).get(
+        AppConstants.hasSeenOnboardingKey,
+        defaultValue: false,
+      );
+      return value == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Matches and Chats normally share the HomeScreen's MatchesBloc; when
+  /// opened as standalone routes they get their own.
+  static Widget _withMatchesBloc(Widget child) {
+    return BlocProvider<MatchesBloc>(
+      create: (_) => getIt<MatchesBloc>()..add(LoadMatchesEvent()),
+      child: child,
+    );
+  }
+
+  static GoRouter createRouter(AuthBloc authBloc) {
     return GoRouter(
       initialLocation: RoutePaths.splash,
       debugLogDiagnostics: kDebugMode,
       refreshListenable: GoRouterRefreshStream(authBloc.stream),
       redirect: (context, state) {
         final authState = authBloc.state;
-        final isAuthenticated = authState is AuthAuthenticated;
-        final isLoading =
-            authState is AuthInitial || authState is AuthLoading;
 
-        final loc = state.matchedLocation;
-        final isPublic = loc == RoutePaths.splash ||
-            loc == RoutePaths.login ||
-            loc == RoutePaths.onboarding ||
-            loc == RoutePaths.privacyPolicy ||
-            loc == RoutePaths.termsOfService;
-
-        if (isLoading) return null;
-
-        if (authState is AuthAuthenticated && isPublic) {
-          if (authState.user.interests.isEmpty) {
-            return RoutePaths.profileSetup;
-          }
-          return RoutePaths.home;
-        }
-
-        if (authState is AuthAuthenticated &&
-            loc == RoutePaths.profileSetup) {
+        // Still resolving the session, or a transient error (e.g. a failed
+        // sign-in or delete attempt): stay where we are.
+        if (authState is AuthInitial ||
+            authState is AuthLoading ||
+            authState is AuthError) {
           return null;
         }
 
-        if (!isAuthenticated) {
-          // Already on login or onboarding -- stay there
-          if (loc == RoutePaths.login || loc == RoutePaths.onboarding) {
-            return null;
+        final loc = state.matchedLocation;
+        // Entry screens a signed-in user is sent away from. The legal pages
+        // are deliberately not listed: Settings pushes them while signed in.
+        final isAuthEntry = loc == RoutePaths.splash ||
+            loc == RoutePaths.login ||
+            loc == RoutePaths.onboarding;
+
+        if (authState is AuthAuthenticated) {
+          if (loc == RoutePaths.profileSetup) return null;
+          if (isAuthEntry) {
+            final user = authState.user;
+            final needsSetup =
+                user.interests.isEmpty || user.lookingFor.isEmpty;
+            return needsSetup ? RoutePaths.profileSetup : RoutePaths.home;
           }
-          // Legal pages are accessible without auth
-          if (loc == RoutePaths.privacyPolicy ||
-              loc == RoutePaths.termsOfService) {
-            return null;
-          }
-          // Everything else (splash, protected routes) -> login/onboarding
-          return hasSeenOnboarding
-              ? RoutePaths.login
-              : RoutePaths.onboarding;
+          return null;
         }
 
-        return null;
+        // Not authenticated.
+        // Already on login or onboarding -- stay there
+        if (loc == RoutePaths.login || loc == RoutePaths.onboarding) {
+          return null;
+        }
+        // Legal pages are accessible without auth
+        if (loc == RoutePaths.privacyPolicy ||
+            loc == RoutePaths.termsOfService) {
+          return null;
+        }
+        // Everything else (splash, protected routes) -> login/onboarding
+        return _hasSeenOnboarding() ? RoutePaths.login : RoutePaths.onboarding;
       },
       routes: [
         GoRoute(
@@ -102,12 +131,13 @@ class AppRouter {
         GoRoute(
           path: RoutePaths.matches,
           name: RouteNames.matches,
-          builder: (context, state) => const MatchesScreen(),
+          builder: (context, state) => _withMatchesBloc(const MatchesScreen()),
         ),
         GoRoute(
           path: RoutePaths.chatList,
           name: RouteNames.chatList,
-          builder: (context, state) => const ChatListScreen(),
+          builder: (context, state) =>
+              _withMatchesBloc(const ChatListScreen()),
         ),
         GoRoute(
           path: RoutePaths.chatDetail,
@@ -115,7 +145,7 @@ class AppRouter {
           builder: (context, state) {
             final matchId = state.pathParameters['matchId'];
             if (matchId == null || matchId.isEmpty) {
-              return const MatchesScreen();
+              return _withMatchesBloc(const MatchesScreen());
             }
             Map<String, String?>? extra;
             try {

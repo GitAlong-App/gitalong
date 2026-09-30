@@ -1,20 +1,27 @@
-
-
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_screenutil/flutter_screenutil.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:phosphor_flutter/phosphor_flutter.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/theme/app_colors.dart';
+import '../../../core/theme/app_palette.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/theme/app_tokens.dart';
 import '../../bloc/auth/auth_bloc.dart';
 import '../../bloc/auth/auth_event.dart';
 import '../../bloc/auth/auth_state.dart';
+import '../../widgets/ui/ui.dart';
+import '../onboarding_flow/full_bleed_system_bars.dart';
 
+/// Sign-in: Octo says hi, one big "Continue with GitHub" button and the
+/// legal caption.
+///
+/// Signing in opens GitHub in the browser; the OAuth deep link brings the
+/// session back, AuthBloc emits [AuthAuthenticated] and the router moves on
+/// (to profile setup or home). This screen only tracks the waiting state.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -23,229 +30,230 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  /// Waiting for the browser round trip.
   bool _loading = false;
 
   void _signInWithGitHub() {
-    HapticFeedback.lightImpact();
+    if (_loading) return;
     setState(() => _loading = true);
     context.read<AuthBloc>().add(SignInWithGitHubEvent());
   }
 
+  /// The browser may be dismissed without a callback: let the user retry.
+  void _cancel() => setState(() => _loading = false);
 
+  void _onAuthState(BuildContext context, AuthState state) {
+    if (state is AuthError) {
+      setState(() => _loading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(state.message)),
+      );
+    } else if (state is AuthAuthenticated || state is AuthUnauthenticated) {
+      setState(() => _loading = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
+    final p = context.palette;
+    final reduceMotion = AppTokens.reduceMotion(context);
+
+    Widget entrance(Widget child, int index) {
+      if (reduceMotion) return child;
+      return child
+          .animate()
+          .fadeIn(
+            delay: AppTokens.stagger * index,
+            duration: AppTokens.medium,
+            curve: AppTokens.curve,
+          )
+          .moveY(begin: AppTokens.entranceOffset, end: 0);
+    }
 
     return BlocListener<AuthBloc, AuthState>(
-      listener: (context, state) {
-        if (state is AuthAuthenticated) {
-          setState(() => _loading = false);
-        } else if (state is AuthError) {
-          setState(() => _loading = false);
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(state.message),
-              backgroundColor: AppColors.error,
-            ),
-          );
-        } else if (state is AuthUnauthenticated) {
-          setState(() => _loading = false);
-        }
-      },
-      child: Scaffold(
-        body: SafeArea(
-          child: Padding(
-            padding: EdgeInsets.symmetric(horizontal: 32.w),
-            child: Column(
-              children: [
-                const Spacer(flex: 2),
-
-                // Logo
-                Container(
-                  width: 110.w,
-                  height: 110.w,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(24.r),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.primary.withValues(alpha: 0.2),
-                        blurRadius: 24,
-                        spreadRadius: 2,
-                        offset: const Offset(0, 8),
+      listener: _onAuthState,
+      child: FullBleedSystemBars(
+        child: Scaffold(
+          backgroundColor: p.bg,
+          body: SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: AppTokens.gutter),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Brand, Octo and the promise.
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: AppTokens.space24),
+                          entrance(
+                            Text(
+                              AppConstants.appName,
+                              // AA-safe green: H2 can drop below large-text
+                              // size on small phones.
+                              style:
+                                  AppTextStyles.h2(p.toneText(AppTone.green)),
+                            ),
+                            0,
+                          ),
+                          const SizedBox(height: AppTokens.space32),
+                          // Animates itself (Octo bounces, the text types on).
+                          MascotBubble(
+                            message: "Hi! I'm Octo. Let's find your people.",
+                            mascotSize: 96,
+                          ),
+                          const SizedBox(height: AppTokens.space32),
+                          entrance(
+                            Semantics(
+                              header: true,
+                              child: Text(
+                                AppConstants.appDescription,
+                                style: AppTextStyles.h1(p.ink),
+                              ),
+                            ),
+                            2,
+                          ),
+                          const SizedBox(height: AppTokens.space12),
+                          entrance(
+                            Text(
+                              'Sign in with GitHub and your repos, stars and '
+                              'languages become your developer card.',
+                              style: AppTextStyles.body(p.inkMuted),
+                            ),
+                            3,
+                          ),
+                        ],
+                      ),
+                      // Sign-in and the legal caption.
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const SizedBox(height: AppTokens.space32),
+                          entrance(
+                            PressableButton(
+                              label: 'Continue with GitHub',
+                              variant: PressableVariant.ink,
+                              icon: PhosphorIconsFill.githubLogo,
+                              size: PressableSize.large,
+                              loading: _loading,
+                              onPressed: _signInWithGitHub,
+                            ),
+                            4,
+                          ),
+                          AnimatedSize(
+                            duration:
+                                AppTokens.motion(context, AppTokens.fast),
+                            curve: AppTokens.curve,
+                            alignment: Alignment.topCenter,
+                            child: _loading
+                                ? _WaitingForBrowser(onCancel: _cancel)
+                                : const SizedBox(width: double.infinity),
+                          ),
+                          const SizedBox(height: AppTokens.space16),
+                          entrance(const _LegalCaption(), 5),
+                          const SizedBox(height: AppTokens.space8),
+                        ],
                       ),
                     ],
                   ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(24.r),
-                    child: Image.asset(
-                      'assets/images/logo.png',
-                      fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => Container(
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF1A1A1A),
-                          borderRadius: BorderRadius.circular(24.r),
-                          border: Border.all(
-                            color: AppColors.primary.withValues(alpha: 0.4),
-                            width: 2,
-                          ),
-                        ),
-                        child: Icon(
-                          PhosphorIconsRegular.githubLogo,
-                          size: 56.sp,
-                          color: AppColors.primary,
-                        ),
-                      ),
-                    ),
-                  ),
                 ),
-
-                SizedBox(height: 28.h),
-
-                Text(
-                  'Welcome to GitAlong',
-                  style: AppTextStyles.headlineMedium(colors.onSurface),
-                  textAlign: TextAlign.center,
-                ),
-                SizedBox(height: 8.h),
-                Text(
-                  'Find your ultimate open-source companion',
-                  style: AppTextStyles.bodyLarge(colors.onSurfaceVariant),
-                  textAlign: TextAlign.center,
-                ),
-
-                const Spacer(),
-
-                // Sign-in buttons
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: _loading ? _buildLoadingState() : _buildButtons(),
-                ),
-
-                const Spacer(),
-
-                // Terms & Privacy
-                _buildLegalText(context),
-
-                SizedBox(height: 16.h),
-              ],
+              ),
             ),
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildButtons() {
-    return Column(
-      key: const ValueKey('buttons'),
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // GitHub (primary)
-        _SignInButton(
-          label: 'Continue with GitHub',
-          icon: PhosphorIconsRegular.githubLogo,
-          backgroundColor: AppColors.github,
-          foregroundColor: Colors.white,
-          onPressed: _signInWithGitHub,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLoadingState() {
-    return Column(
-      key: const ValueKey('loading'),
-      children: [
-        SizedBox(
-          width: 32.w,
-          height: 32.w,
-          child: CircularProgressIndicator(
-            color: AppColors.primary,
-            strokeWidth: 3,
-          ),
-        ),
-        SizedBox(height: 16.h),
-        Text(
-          'Signing in...',
-          style: AppTextStyles.bodyMedium(
-            Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-        ),
-        SizedBox(height: 12.h),
-        TextButton(
-          onPressed: () => setState(() => _loading = false),
-          child: Text('Cancel', style: AppTextStyles.bodyMedium(AppColors.primary)),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildLegalText(BuildContext context) {
-    final muted = Theme.of(context).colorScheme.onSurfaceVariant;
-
-    return RichText(
-      textAlign: TextAlign.center,
-      text: TextSpan(
-        style: AppTextStyles.bodySmall(muted),
-        children: [
-          const TextSpan(text: 'By continuing, you agree to our '),
-          TextSpan(
-            text: 'Terms of Service',
-            style: AppTextStyles.bodySmall(AppColors.primary),
-            recognizer: TapGestureRecognizer()
-              ..onTap = () => context.push(RoutePaths.termsOfService),
-          ),
-          const TextSpan(text: ' and '),
-          TextSpan(
-            text: 'Privacy Policy',
-            style: AppTextStyles.bodySmall(AppColors.primary),
-            recognizer: TapGestureRecognizer()
-              ..onTap = () => context.push(RoutePaths.privacyPolicy),
-          ),
-        ],
       ),
     );
   }
 }
 
-class _SignInButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final Color backgroundColor;
-  final Color foregroundColor;
-  final Color? borderColor;
-  final VoidCallback onPressed;
+/// Shown under the button while the GitHub page is open in the browser.
+class _WaitingForBrowser extends StatelessWidget {
+  const _WaitingForBrowser({required this.onCancel});
 
-  const _SignInButton({
-    required this.label,
-    required this.icon,
-    required this.backgroundColor,
-    required this.foregroundColor,
-    this.borderColor,
-    required this.onPressed,
-  });
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 52.h,
-      child: ElevatedButton.icon(
-        onPressed: onPressed,
-        icon: Icon(icon, size: 22.sp, color: foregroundColor),
-        label: Text(label, style: AppTextStyles.titleMedium(foregroundColor)),
-        style: ElevatedButton.styleFrom(
-          backgroundColor: backgroundColor,
-          foregroundColor: foregroundColor,
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14.r),
-            side: borderColor != null
-                ? BorderSide(color: borderColor!)
-                : BorderSide.none,
+    final p = context.palette;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const SizedBox(height: AppTokens.space12),
+        Semantics(
+          container: true,
+          liveRegion: true,
+          child: Text(
+            'Finish signing in on GitHub in your browser, then come back here.',
+            style: AppTextStyles.bodySm(p.inkMuted),
+            textAlign: TextAlign.center,
           ),
         ),
+        const SizedBox(height: AppTokens.space4),
+        PressableButton(
+          label: 'Cancel',
+          variant: PressableVariant.ghost,
+          onPressed: onCancel,
+        ),
+      ],
+    );
+  }
+}
+
+/// "By continuing, you agree to our Terms of Service and Privacy Policy",
+/// with both documents as real buttons (48 px targets) rather than tiny
+/// inline links.
+class _LegalCaption extends StatelessWidget {
+  const _LegalCaption();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    final linkColor = p.toneText(AppTone.green);
+    final linkStyle = TextButton.styleFrom(
+      foregroundColor: linkColor,
+      minimumSize: const Size(
+        AppTokens.minTouchTarget,
+        AppTokens.minTouchTarget,
       ),
+      padding: const EdgeInsets.symmetric(horizontal: AppTokens.space8),
+      textStyle: AppTextStyles.bodySm(linkColor).copyWith(
+        fontWeight: FontWeight.w800,
+        decoration: TextDecoration.underline,
+        decorationColor: linkColor,
+      ),
+    );
+    final captionStyle = AppTextStyles.bodySm(p.inkMuted);
+
+    return Column(
+      children: [
+        Text(
+          'By continuing, you agree to our',
+          style: captionStyle,
+          textAlign: TextAlign.center,
+        ),
+        Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            TextButton(
+              style: linkStyle,
+              onPressed: () => context.push(RoutePaths.termsOfService),
+              child: const Text('Terms of Service'),
+            ),
+            Text('and', style: captionStyle),
+            TextButton(
+              style: linkStyle,
+              onPressed: () => context.push(RoutePaths.privacyPolicy),
+              child: const Text('Privacy Policy'),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

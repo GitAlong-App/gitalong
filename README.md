@@ -1,183 +1,131 @@
 <div align="center">
-  <img src="assets/images/logo.png" alt="GitAlong Logo" width="120" height="120" style="border-radius: 20px"/>
+  <img src="assets/app_icon/app_icon.jpg" alt="GitAlong" width="112" height="112" style="border-radius: 20px"/>
   <h1>GitAlong</h1>
-  <p><strong>A developer matching app for finding collaborators.</strong></p>
-
-  <p>
-    <img src="https://img.shields.io/badge/Flutter-3.29%2B-02569B?logo=flutter" alt="Flutter"/>
-    <img src="https://img.shields.io/badge/Dart-3.7%2B-0175C2?logo=dart" alt="Dart"/>
-    <img src="https://img.shields.io/badge/Supabase-Backend-3ECF8E?logo=supabase" alt="Supabase"/>
-    <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/>
-  </p>
+  <p><strong>Find the developer your project is missing.</strong></p>
+  <p>Intent-based collaborator matching for developers, backed by real GitHub work.</p>
 </div>
 
 ---
 
-## Overview
+GitAlong helps developers find a **co-founder, side-project partner, open-source
+collaborators, hackathon teammates, or a mentor**. You say what you're building
+and who you need. GitAlong ranks people on *compatible intent*, *complementary
+skills* and real GitHub work, and every card explains why it's there. A mutual
+like opens a chat.
 
-GitAlong is a Flutter app for discovering other developers, matching based on shared interests, and chatting after a match. Authentication and realtime messaging are backed by Supabase, with sign-in via GitHub OAuth.
+- Product & business strategy: [`docs/STRATEGY.md`](docs/STRATEGY.md)
+- How the app, website and backend talk to the database: [`docs/API_AND_DATA_CONTRACT.md`](docs/API_AND_DATA_CONTRACT.md)
+- What was fixed in the September 2026 overhaul: [`docs/AUDIT.md`](docs/AUDIT.md)
+- Design system ("Play": tokens, components, gamification): [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md)
 
-## Features
-
-- GitHub sign-in (OAuth via Supabase)
-- Profile discovery and swipe-based matching
-- Match list
-- Realtime chat (Supabase Realtime)
-
-## Project structure
-
-Clean Architecture with strict layer separation:
+## Repository layout
 
 ```
-lib/
-├── core/                   # Cross-cutting concerns
-│   ├── constants/          # App-wide constants
-│   ├── di/                 # Dependency injection (get_it + injectable)
-│   ├── router/             # Navigation (GoRouter)
-│   ├── theme/              # Colors, text styles, app theme
-│   └── utils/              # Logger, helpers
-│
-├── data/                   # Data layer
-│   ├── models/             # JSON-serializable models (json_annotation)
-│   ├── repositories/       # Repository implementations (Supabase)
-│   └── services/           # GitHub API, Recommendation engine
-│
-├── domain/                 # Business logic layer (pure Dart)
-│   ├── entities/           # Business entities
-│   ├── repositories/       # Repository abstractions
-│   └── usecases/           # Use cases (one per action)
-│
-└── presentation/           # UI layer
-    ├── bloc/               # BLoC state management
-    ├── screens/            # Full-page screens
-    └── widgets/            # Reusable components
+.
+├── lib/                    Flutter app (BLoC + get_it/injectable + go_router, clean architecture)
+│   ├── core/               constants (incl. collaboration intents), DI, router, theme, utils
+│   ├── data/               Supabase + backend implementations of the repositories
+│   ├── domain/             entities, repository interfaces, use cases (pure Dart)
+│   └── presentation/       blocs, screens, widgets
+├── test/                   Flutter unit tests
+├── backend/                FastAPI ranking + GitHub sync service (Docker, Render)
+│   ├── app/services/       collab.py (intent logic), ranking engine, ML ranker/trainer
+│   └── tests/              pytest suite
+├── supabase/
+│   ├── migrations/         ordered SQL migrations: schema, RLS, triggers, RPCs, metrics
+│   ├── tests/              migration + security tests on PGlite (real Postgres in WASM)
+│   └── legacy/             the pre-2026-09 SQL files (kept to test upgrades)
+├── docs/                   strategy, API/data contract, audit
+└── .github/workflows/      CI: backend, database, Flutter
 ```
 
-## Tech stack
+The website (marketing site plus web app) lives in a separate repository,
+`GitAlong-App/GitAlong-Website`, and follows the same contract.
 
-| Category | Technology |
-|---|---|
-| Framework | Flutter 3.29+ |
-| Language | Dart 3.7+ |
-| State Management | flutter_bloc |
-| Dependency Injection | get_it + injectable |
-| Navigation | go_router |
-| Backend | Supabase (Auth, Database, Realtime) |
-| Auth | GitHub OAuth (PKCE flow) |
-| Deep Linking | app_links |
-| HTTP | Dio + http |
-| Local Storage | Hive + flutter_secure_storage |
-| UI | flutter_screenutil, flutter_animate, lottie |
-| Icons | phosphor_flutter |
+## Architecture
+
+```
+ Flutter app ──┐                       ┌── Supabase Auth (GitHub OAuth)
+               ├── core loops ────────►│   Postgres + RLS: profiles, swipes, matches,
+ Web app ──────┘   (profile, swipe,    │   messages, blocks, reports, notifications
+               │    match, chat,       │   Triggers: match on mutual like, message previews
+               │    block/report)      │   Realtime: messages, matches, notifications
+               │                       └───────────────▲──────────────────────────────
+               └── ranking + GitHub ──► FastAPI backend (service role)
+                   sync                 · candidate pool via SQL RPC
+                                        · 8-signal hybrid ranker + optional ML re-rank
+                                        · "why you matched" reasons
+                                        · GitHub stats sync, admin metrics
+```
+
+Core loops go straight to Supabase, so they keep working when the backend is
+cold-starting. The database enforces the security rules itself. For example,
+a client can't create a match, message someone it hasn't matched with, or read
+another user's email.
 
 ## Getting started
 
 ### Prerequisites
+- Flutter ≥ 3.29 / Dart ≥ 3.7
+- Python 3.12
+- Node ≥ 18 (for the database tests)
+- A [Supabase](https://supabase.com) project and a [GitHub OAuth App](https://github.com/settings/developers)
 
-- Flutter `>=3.29.0`
-- Dart `>=3.7.0`
-- A [Supabase](https://supabase.com) project
-- A [GitHub OAuth App](https://github.com/settings/developers)
+### 1. Database (Supabase)
+Apply the migrations **in filename order**, using either the Supabase CLI
+(`supabase link` then `supabase db push`) or the SQL editor:
 
-### Clone
-
-```bash
-git clone https://github.com/sreevallabh04/gitalong.git
-cd gitalong
+```
+supabase/migrations/20260101000000_base_schema.sql
+supabase/migrations/20260929000100_collaboration_schema.sql
+supabase/migrations/20260929000200_security_and_matching.sql
+supabase/migrations/20260929000300_product_metrics.sql
+supabase/migrations/20260930000400_progress.sql
 ```
 
-### Install dependencies
+They're idempotent and upgrade an existing project that ran the old root-level
+SQL files, including merging duplicate matches.
 
+Auth setup:
+1. **Authentication → Providers → GitHub**: add your OAuth App's client ID and secret.
+2. **Authentication → URL Configuration**: add `app.gitalong://login-callback/` (mobile) and your website origin to Redirect URLs.
+3. GitHub OAuth App callback URL: `https://<project>.supabase.co/auth/v1/callback`.
+
+### 2. Backend
 ```bash
+cd backend
+cp .env.example .env                      # fill in Supabase URL + keys
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+uvicorn app.main:app --reload             # http://localhost:8000/docs
+```
+
+### 3. Mobile app
+```bash
+cp .env.example .env                      # SUPABASE_URL, SUPABASE_ANON_KEY, BACKEND_URL
 flutter pub get
-```
-
-### Configure environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env` and fill in your values:
-
-```env
-GITHUB_CLIENT_ID=your_github_oauth_client_id
-SUPABASE_URL=https://your-project-id.supabase.co
-SUPABASE_ANON_KEY=your_supabase_anon_key
-```
-
-Notes:
-- This app uses the OAuth + PKCE flow through Supabase. Do not ship a GitHub client secret inside a mobile app.
-
-### Supabase setup
-
-1. Create a new [Supabase project](https://supabase.com/dashboard)
-2. Go to **SQL Editor** and run `supabase_schema.sql` from this repo
-3. Go to **Authentication → Providers → GitHub** and enable it:
-   - **Client ID**: your GitHub OAuth App client ID
-   - **Client Secret**: your GitHub OAuth App client secret
-4. Go to **Authentication → URL Configuration**:
-   - Add `app.gitalong://login-callback/` to **Redirect URLs**
-
-### GitHub OAuth App setup
-
-1. Go to [GitHub Developer Settings](https://github.com/settings/developers) → **OAuth Apps**
-2. Create a new OAuth App:
-   - **Homepage URL**: your project homepage (or repository URL)
-   - **Authorization callback URL**: `https://your-project-id.supabase.co/auth/v1/callback`
-
-### Run
-
-```bash
 flutter run
 ```
-
-## Database schema
-
-All tables use `snake_case` column names (standard Postgres convention). Run `supabase_schema.sql` in your Supabase SQL Editor to create:
-
-| Table | Purpose |
-|---|---|
-| `users` | User profiles synced from GitHub OAuth |
-| `swipes` | Swipe actions (like / dislike / super_like) |
-| `matches` | Mutual matches between users |
-| `messages` | Real-time chat messages |
-| `github_cache` | Cached GitHub stats for recommendations |
-
-## Security notes
-
-- `.env` is **gitignored** — never committed
-- All API keys go in `.env` only
-- Supabase Row Level Security (RLS) is enabled on all tables
-- GitHub OAuth uses PKCE (no client secret embedded in the app)
-
-## Building
-
-```bash
-# Android APK
-flutter build apk --release
-
-# Android App Bundle (for Play Store)
-flutter build appbundle --release
-
-# iOS (requires macOS + Xcode)
-flutter build ios --release
-```
+`.env` is bundled into the app as an asset. Put only public values there
+(the anon key is public; never add secrets).
 
 ## Tests
 
+| Suite | Command |
+|---|---|
+| Backend (pytest + ruff) | `cd backend && ruff check app tests && pytest` |
+| Database migrations & RLS | `cd supabase/tests && npm install && npm test` |
+| Flutter | `flutter analyze && flutter test` |
+
+All three run in CI on every push and pull request.
+
+## Building
 ```bash
-flutter test
+flutter build apk --release          # Android (beta builds are published on GitHub Releases)
+flutter build appbundle --release    # Play Store
+flutter build ipa --release          # iOS (macOS + Xcode)
 ```
-
-## Contributing
-
-1. Fork the repo
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit your changes: `git commit -m 'feat: add my feature'`
-4. Push the branch: `git push origin feature/my-feature`
-5. Open a Pull Request
+Deployment steps are in [`DEPLOYMENT_GUIDE.md`](DEPLOYMENT_GUIDE.md).
 
 ## License
-
 MIT © [sreevallabh04](https://github.com/sreevallabh04)

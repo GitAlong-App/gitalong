@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:injectable/injectable.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthState;
+import '../../../core/utils/logger.dart';
 import '../../../domain/usecases/auth/get_current_user_usecase.dart';
 import '../../../domain/usecases/auth/sign_in_with_github_usecase.dart';
 import '../../../domain/usecases/auth/sign_in_with_google_usecase.dart';
@@ -19,6 +22,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final SignOutUseCase _signOutUseCase;
   final DeleteAccountUseCase _deleteAccountUseCase;
 
+  StreamSubscription<dynamic>? _authSubscription;
+
   AuthBloc(
     this._getCurrentUserUseCase,
     this._signInWithGitHubUseCase,
@@ -33,12 +38,24 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<SignInWithAppleEvent>(_onSignInWithApple);
     on<SignOutEvent>(_onSignOut);
     on<DeleteAccountEvent>(_onDeleteAccount);
-    
-    // Automatically intercept browser sign in callbacks from deep links
-    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
-      if (data.event == AuthChangeEvent.signedIn) {
+    on<AuthSessionEndedEvent>(_onSessionEnded);
+
+    // Follow the Supabase session: OAuth deep-link callbacks sign the user
+    // in, and a revoked/expired session or deleted user must sign them out
+    // (otherwise the app keeps showing a "logged in" user with no session).
+    _authSubscription =
+        Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      final event = data.event;
+      if (event == AuthChangeEvent.signedIn) {
         add(AuthCheckRequested());
+      } else if (event == AuthChangeEvent.signedOut ||
+          // `userDeleted` is deprecated in gotrue; compare by name so this
+          // compiles whether or not the enum value still exists.
+          event.name == 'userDeleted') {
+        add(AuthSessionEndedEvent());
       }
+    }, onError: (Object error, StackTrace stackTrace) {
+      AppLogger.w('Auth state stream error', error, stackTrace);
     });
   }
 
@@ -46,14 +63,29 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       AuthCheckRequested event, Emitter<AuthState> emit) async {
     try {
       final user = await _getCurrentUserUseCase.call();
-      if (user != null) {
+      // The session may have ended (sign-out) while the profile was loading.
+      if (user != null && Supabase.instance.client.auth.currentUser != null) {
         emit(AuthAuthenticated(user));
       } else {
         emit(AuthUnauthenticated());
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      AppLogger.w('Auth check failed', e, stackTrace);
+      // A failed re-check (e.g. right after saving the profile) must not
+      // throw a signed-in user out of the app.
+      if (state is AuthAuthenticated &&
+          Supabase.instance.client.auth.currentUser != null) {
+        return;
+      }
+      emit(const AuthError(
+        "Couldn't load your profile. Check your connection and try again.",
+      ));
       emit(AuthUnauthenticated());
     }
+  }
+
+  void _onSessionEnded(AuthSessionEndedEvent event, Emitter<AuthState> emit) {
+    emit(AuthUnauthenticated());
   }
 
   Future<void> _onSignInWithGitHub(
@@ -104,19 +136,34 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
   Future<void> _onDeleteAccount(
       DeleteAccountEvent event, Emitter<AuthState> emit) async {
+    final previous = state;
     emit(AuthLoading());
     try {
       await _deleteAccountUseCase.call();
       emit(AuthUnauthenticated());
-    } catch (e) {
-      emit(AuthError('Failed to delete account: $e'));
-      // fallback to unauthenticated or just error? Let's assume if it fails we stay authenticated
-      final user = await _getCurrentUserUseCase.call();
-      if (user != null) {
-        emit(AuthAuthenticated(user));
-      } else {
+    } catch (e, stackTrace) {
+      AppLogger.e('Account deletion failed', e, stackTrace);
+      emit(const AuthError(
+        "We couldn't delete your account. Check your connection and try again.",
+      ));
+      // Nothing was deleted (or we can't tell): stay signed in.
+      if (previous is AuthAuthenticated &&
+          Supabase.instance.client.auth.currentUser != null) {
+        emit(previous);
+        return;
+      }
+      try {
+        final user = await _getCurrentUserUseCase.call();
+        emit(user != null ? AuthAuthenticated(user) : AuthUnauthenticated());
+      } catch (_) {
         emit(AuthUnauthenticated());
       }
     }
+  }
+
+  @override
+  Future<void> close() async {
+    await _authSubscription?.cancel();
+    return super.close();
   }
 }

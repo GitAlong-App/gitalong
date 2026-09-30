@@ -82,3 +82,17 @@ analyze_output.txt
 *.apk
 *.aab
 *.ipa
+
+# ---- Generated per machine / per build ----
+**/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+**/linux/flutter/ephemeral/
+**/windows/flutter/ephemeral/
+
+# ---- Tooling ----
+node_modules/
+supabase/.temp/
+backend/.venv/
+.ruff_cache/
+
+# ---- Website: separate repo (GitAlong-App/GitAlong-Website), cloned here for convenience ----
+/GitAlong-Website/

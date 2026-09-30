@@ -7,16 +7,20 @@ import '../../core/di/injection.dart';
 import '../../domain/entities/notification_entity.dart';
 import '../../domain/repositories/notification_repository.dart';
 
-/// Listens to new-match notifications and shows a SnackBar with "Open" to go to chat.
-/// Wrap the authenticated shell (e.g. HomeScreen body) with this.
+/// Listens to new-match notifications and shows a SnackBar with "Open" to go
+/// to chat. Wrap the authenticated shell (e.g. HomeScreen body) with this.
 class NotificationsListener extends StatefulWidget {
   final String userId;
   final Widget child;
+
+  /// Called for every new match (e.g. to refresh the matches list).
+  final ValueChanged<NewMatchNotification>? onNewMatch;
 
   const NotificationsListener({
     super.key,
     required this.userId,
     required this.child,
+    this.onNewMatch,
   });
 
   @override
@@ -32,7 +36,7 @@ class _NotificationsListenerState extends State<NotificationsListener> {
     final repo = getIt<NotificationRepository>();
     _sub = repo
         .listenToNewMatchNotifications(widget.userId)
-        .listen(_onNewMatchNotification);
+        .listen(_onNewMatchNotification, onError: (Object _) {});
   }
 
   @override
@@ -43,6 +47,7 @@ class _NotificationsListenerState extends State<NotificationsListener> {
 
   void _onNewMatchNotification(NewMatchNotification n) {
     if (!mounted) return;
+    widget.onNewMatch?.call(n);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('You matched with ${n.fromUserName}!'),
@@ -50,6 +55,7 @@ class _NotificationsListenerState extends State<NotificationsListener> {
         action: SnackBarAction(
           label: 'Open',
           onPressed: () {
+            if (!mounted) return;
             context.push(
               '/chats/${n.matchId}',
               extra: {

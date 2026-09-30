@@ -8,28 +8,17 @@ import '../../repositories/swipe_repository.dart';
 @injectable
 class SwipeUserUseCase {
   final SwipeRepository _swipeRepository;
-  
+
   const SwipeUserUseCase(this._swipeRepository);
-  
-  /// Execute the use case
+
+  /// Records the swipe and returns the resulting match, if any.
   Future<MatchEntity?> call({
     required String swipedUserId,
     required SwipeAction action,
-  }) async {
-    // Record the swipe
-    await _swipeRepository.swipeUser(
+  }) {
+    return _swipeRepository.swipeUser(
       swipedUserId: swipedUserId,
       action: action,
     );
-    
-    // Check for match
-    if (action == SwipeAction.like || action == SwipeAction.superLike) {
-      return await _swipeRepository.checkForMatch(swipedUserId);
-    }
-    
-    return null;
   }
 }
-
-
-

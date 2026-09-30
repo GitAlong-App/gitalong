@@ -59,9 +59,9 @@ void main() async {
       ),
     );
 
-    final settingsBox = await Hive.openBox(AppConstants.settingsBox);
-    final hasSeenOnboarding =
-        settingsBox.get('has_seen_onboarding', defaultValue: false) as bool;
+    // Opened before the router is created: the router reads the onboarding
+    // flag from this box synchronously on every redirect.
+    await Hive.openBox(AppConstants.settingsBox);
 
     if (kDebugMode) {
       AppLogger.i('GitAlong app starting...');
@@ -69,7 +69,7 @@ void main() async {
     }
 
     final authBloc = getIt<AuthBloc>()..add(AuthCheckRequested());
-    final router = AppRouter.createRouter(authBloc, hasSeenOnboarding);
+    final router = AppRouter.createRouter(authBloc);
 
     runApp(GitAlongApp(authBloc: authBloc, router: router));
   }, (error, stack) {

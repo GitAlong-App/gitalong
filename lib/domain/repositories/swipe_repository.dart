@@ -3,13 +3,14 @@ import '../entities/match_entity.dart';
 
 /// Swipe repository interface
 abstract class SwipeRepository {
-  /// Record a swipe action
-  Future<void> swipeUser({
+  /// Record a swipe action. For likes / super likes, returns the match when
+  /// the swipe completed one (matches are created by a database trigger).
+  Future<MatchEntity?> swipeUser({
     required String swipedUserId,
     required SwipeAction action,
   });
 
-  /// Check if swipe resulted in a match
+  /// Look up an existing match with [swipedUserId] (read-only).
   Future<MatchEntity?> checkForMatch(String swipedUserId);
 
   /// Get swipe history
