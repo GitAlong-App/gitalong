@@ -3,16 +3,23 @@ services:
     name: gitalong-backend
     runtime: docker
     rootDir: backend
+    healthCheckPath: /api/v1/health
     envVars:
       - key: SUPABASE_URL
         sync: false
-      - key: SUPABASE_KEY
+      - key: SUPABASE_ANON_KEY
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: JWT_SECRET_KEY
+      - key: SUPABASE_JWT_SECRET
         sync: false
-      - key: GITHUB_CLIENT_ID
+      - key: GITHUB_TOKEN
         sync: false
-      - key: GITHUB_CLIENT_SECRET
-        sync: false
+      - key: ADMIN_RETRAIN_SECRET
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: https://gitalong.app,https://www.gitalong.app,https://gitalong.vercel.app
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: ML_RANKING_ENABLED
+        value: "false"

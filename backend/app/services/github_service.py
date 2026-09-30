@@ -1,99 +1,91 @@
 from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+
 import httpx
+
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class GitHubUnavailable(RuntimeError):
+    """GitHub could not be reached or rate-limited us. Callers must not overwrite data."""
+
+
+@dataclass
+class GitHubStats:
+    profile: dict
+    followers: int
+    following: int
+    public_repos: int
+    total_stars: int
+    total_forks: int
+    languages: list[str] = field(default_factory=list)   # most-used first
+    topics: list[str] = field(default_factory=list)      # most frequent first
 
 
 class GitHubService:
-    """
-    Fetches developer data from the GitHub REST API.
-    Uses a Personal Access Token for higher rate limits.
-    """
+    """Reads public developer data from the GitHub REST API."""
 
     BASE = "https://api.github.com"
 
-    def __init__(self):
-        settings = get_settings()
-        headers = {"Accept": "application/vnd.github+json"}
-        if settings.github_token:
-            headers["Authorization"] = f"Bearer {settings.github_token}"
-        self._client = httpx.AsyncClient(
-            base_url=self.BASE,
-            headers=headers,
-            timeout=10.0,
-        )
+    def __init__(self, token: str | None = None, transport: httpx.AsyncBaseTransport | None = None):
+        token = get_settings().github_token if token is None else token
+        headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        self._headers = headers
+        self._transport = transport
 
-    async def get_user(self, username: str) -> dict:
-        resp = await self._client.get(f"/users/{username}")
-        resp.raise_for_status()
-        return resp.json()
+    async def fetch_stats(self, username: str) -> GitHubStats:
+        async with httpx.AsyncClient(
+            base_url=self.BASE, headers=self._headers, timeout=10.0, transport=self._transport
+        ) as client:
+            try:
+                user_resp = await client.get(f"/users/{username}")
+                repos_resp = await client.get(
+                    f"/users/{username}/repos",
+                    params={"per_page": 100, "sort": "pushed", "type": "owner"},
+                )
+            except httpx.HTTPError as exc:
+                raise GitHubUnavailable(f"GitHub request failed: {exc}") from exc
 
-    async def get_repos(self, username: str, per_page: int = 100) -> list[dict]:
-        resp = await self._client.get(
-            f"/users/{username}/repos",
-            params={"per_page": per_page, "sort": "updated"},
-        )
-        resp.raise_for_status()
-        return resp.json()
+        for resp in (user_resp, repos_resp):
+            if resp.status_code in (403, 429):
+                raise GitHubUnavailable("GitHub rate limit reached")
+            # Anything but 200 (including a redirect, which httpx doesn't
+            # follow) is not data; treating it as data would zero the stats.
+            if resp.status_code != 200:
+                raise GitHubUnavailable(f"GitHub returned {resp.status_code}")
 
-    async def get_top_languages(self, username: str) -> list[str]:
-        """Return languages sorted by usage across all repos."""
-        repos = await self.get_repos(username)
-        lang_counts: dict[str, int] = {}
-        for repo in repos:
-            lang = repo.get("language")
-            if lang:
-                lang_counts[lang] = lang_counts.get(lang, 0) + 1
-        return sorted(lang_counts, key=lang_counts.get, reverse=True)  # type: ignore
-
-    async def get_topics(self, username: str) -> list[str]:
-        repos = await self.get_repos(username)
-        topics: set[str] = set()
-        for repo in repos:
-            topics.update(repo.get("topics", []))
-        return list(topics)
-
-    async def calculate_developer_score(self, username: str) -> dict:
-        """
-        Returns a dict with:
-            total_stars, total_forks, total_commits (approx),
-            public_repos, languages, topics, activity_score
-        """
         try:
-            user = await self.get_user(username)
-            repos = await self.get_repos(username)
-        except httpx.HTTPError:
-            return {
-                "total_stars": 0, "total_forks": 0, "total_commits": 0,
-                "public_repos": 0, "languages": [], "topics": [],
-                "activity_score": 0.0,
-            }
+            user = user_resp.json()
+            repos_json = repos_resp.json()
+        except ValueError as exc:
+            raise GitHubUnavailable("GitHub returned a non-JSON body") from exc
+        if not isinstance(user, dict) or not isinstance(repos_json, list):
+            raise GitHubUnavailable("GitHub returned an unexpected payload")
+        repos = [r for r in repos_json if isinstance(r, dict) and not r.get("fork")]
 
-        total_stars = sum(r.get("stargazers_count", 0) for r in repos)
-        total_forks = sum(r.get("forks_count", 0) for r in repos)
-
-        lang_counts: dict[str, int] = {}
-        topics: set[str] = set()
+        lang_weight: dict[str, int] = {}
+        topic_count: dict[str, int] = {}
         for repo in repos:
             lang = repo.get("language")
             if lang:
-                lang_counts[lang] = lang_counts.get(lang, 0) + 1
-            topics.update(repo.get("topics", []))
+                # weight by stars so flagship repos count more than experiments
+                lang_weight[lang] = lang_weight.get(lang, 0) + 1 + int(repo.get("stargazers_count") or 0)
+            for topic in repo.get("topics") or []:
+                topic_count[topic] = topic_count.get(topic, 0) + 1
 
-        languages = sorted(lang_counts, key=lang_counts.get, reverse=True)  # type: ignore
-
-        # Activity score: 0-100 based on stars, repos, followers
-        activity_score = min(
-            100.0,
-            (total_stars * 2 + user.get("public_repos", 0) * 3 + user.get("followers", 0)) / 10,
+        return GitHubStats(
+            profile=user,
+            followers=int(user.get("followers") or 0),
+            following=int(user.get("following") or 0),
+            public_repos=int(user.get("public_repos") or 0),
+            total_stars=sum(int(r.get("stargazers_count") or 0) for r in repos),
+            total_forks=sum(int(r.get("forks_count") or 0) for r in repos),
+            languages=sorted(lang_weight, key=lang_weight.get, reverse=True),
+            topics=sorted(topic_count, key=topic_count.get, reverse=True),
         )
-
-        return {
-            "total_stars": total_stars,
-            "total_forks": total_forks,
-            "total_commits": 0,  # Requires separate API call per repo
-            "public_repos": user.get("public_repos", 0),
-            "language_count": len(lang_counts),
-            "languages": languages[:10],
-            "topics": list(topics)[:20],
-            "activity_score": round(activity_score, 2),
-        }

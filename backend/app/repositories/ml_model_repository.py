@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from supabase import Client
 from postgrest.exceptions import APIError
+from supabase import Client
 
 from ..database import get_supabase_client
 

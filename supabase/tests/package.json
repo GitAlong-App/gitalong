@@ -1,0 +1,12 @@
+{
+  "name": "gitalong-db-tests",
+  "private": true,
+  "type": "module",
+  "description": "Runs the Supabase migrations against PGlite (Postgres in WASM) and checks the security model.",
+  "scripts": {
+    "test": "node migrations.test.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.8"
+  }
+}

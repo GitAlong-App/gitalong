@@ -1,191 +1,179 @@
 """
-Advanced Recommendation Engine (Heavy Edition)
-==============================================
-A professional-grade hybrid recommendation system using:
-  1. Content-Based Filtering (CBF):
-     - TF-IDF Vectorization for interests/topics
-     - Weighted Jaccard Similarity for tech stacks (languages)
-     - Log-normalized Activity scoring
-  2. Collaborative Filtering (CF):
-     - Popularity-based priors from swipe behavior
-  3. Hybrid Ranking:
-     - Blends tech stack, activity, and community signals
+Hybrid recommendation engine
+============================
+Scores a candidate pool for one viewer. Deterministic and I/O free.
+
+Signals (weights sum to 1.0):
+
+  intent        0.20  Do they want compatible things? (collab.intent_compatibility)
+  complement    0.20  Does each have skills the other is looking for?
+  tech          0.20  Jaccard overlap of languages
+  interests     0.15  TF-IDF cosine over interests + GitHub repo topics
+  activity      0.10  Similar developer "tier" (log-scaled followers/repos/stars)
+  community     0.05  Distinct inbound likes, normalised within the pool
+  recency       0.05  Recently active
+  location      0.05  Same / overlapping location
+
+A small quality multiplier rewards complete profiles (bio, avatar, pitch).
+The original engine rewarded only similarity; collaboration usually needs
+*compatible goals* and *complementary skills*, so those now carry 40%.
 """
+from __future__ import annotations
 
-import numpy as np
-from datetime import datetime, timezone
-from typing import List, Dict, Any
+import math
+from datetime import UTC, datetime
 
-# We import these conditionally so we don't crash if install is still pending
-try:
+try:  # scikit-learn is optional at import time; fall back to Jaccard.
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.metrics.pairwise import cosine_similarity
-except ImportError:
+except ImportError:  # pragma: no cover
     TfidfVectorizer = None
     cosine_similarity = None
 
-from ..models.user import UserProfile, UserSummary
 from ..models.recommendation import ScoredCandidate
+from ..models.user import UserProfile
+from . import collab
+
+
+def _lower_set(values) -> set[str]:
+    return {v.strip().lower() for v in values or [] if v and v.strip()}
+
+
+def jaccard(a, b) -> float:
+    sa, sb = _lower_set(a), _lower_set(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def _topics(p: UserProfile) -> list[str]:
+    return list(p.interests or []) + list(p.github_topics or [])
 
 
 class HeavyRecommendationEngine:
-    """
-    Advanced engine designed for project reviews.
-    Includes explicit score breakdowns and ML-driven similarity.
-    """
-
-    # Scoring Weights (Total 1.0)
-    W_TECH_STACK = 0.40   # Languages match
-    W_INTERESTS = 0.20    # Interests/Topics (TF-IDF)
-    W_ACTIVITY = 0.15     # GitHub followers/stars/repos (Log-normalized)
-    W_COMMUNITY = 0.15    # CF signal (Likes from others)
-    W_LOCATION = 0.05     # Shared location
-    W_RECENCY = 0.05      # Active in last 7 days
+    W_INTENT = 0.20
+    W_COMPLEMENT = 0.20
+    W_TECH = 0.20
+    W_INTERESTS = 0.15
+    W_ACTIVITY = 0.10
+    W_COMMUNITY = 0.05
+    W_RECENCY = 0.05
+    W_LOCATION = 0.05
 
     def score_candidates(
         self,
         current_user: UserProfile,
-        candidates: List[UserSummary],
-        cf_liked_by: Dict[str, int],  # user_id -> number of people who liked them
+        candidates: list[UserProfile],
+        cf_liked_by: dict[str, int],
         max_cf_count: int = 1,
-    ) -> List[ScoredCandidate]:
+    ) -> list[ScoredCandidate]:
         if not candidates:
             return []
 
-        scored_list = []
+        interest_scores = self._interest_similarity(current_user, candidates)
+        max_cf = max(max_cf_count, 1)
+        scored: list[ScoredCandidate] = []
 
-        # 1. Prepare TF-IDF for Interests if possible
-        interest_scores = self._calculate_interest_similarity(current_user, candidates)
-
-        for i, candidate in enumerate(candidates):
-            # --- Signal 1: Tech Stack (Languages) ---
-            tech_score = self._calculate_jaccard(current_user.languages, candidate.languages)
-
-            # --- Signal 2: Interests (ML Cosine Sim) ---
-            int_score = interest_scores[i]
-
-            # --- Signal 3: Activity Level (Log-normalized) ---
-            # We compare the "developer tier" of the users
-            act_score = self._calculate_activity_score(current_user, candidate)
-
-            # --- Signal 4: Community (CF - Popularity) ---
-            count = cf_liked_by.get(candidate.id, 0)
-            comm_score = count / max_cf_count if max_cf_count > 0 else 0.0
-
-            # --- Signal 5: Location Bonus ---
-            loc_score = 0.0
-            if current_user.location and candidate.location:
-                if current_user.location.lower() == candidate.location.lower():
-                    loc_score = 1.0
-                elif current_user.location.lower() in candidate.location.lower() or \
-                     candidate.location.lower() in current_user.location.lower():
-                    loc_score = 0.5
-
-            # --- Signal 6: Recency ---
-            rec_score = self._calculate_recency_score(candidate.last_active_at)
-
-            # Blended Total (0.0 to 100.0)
-            final_raw = (
-                tech_score * self.W_TECH_STACK +
-                int_score * self.W_INTERESTS +
-                act_score * self.W_ACTIVITY +
-                comm_score * self.W_COMMUNITY +
-                loc_score * self.W_LOCATION +
-                rec_score * self.W_RECENCY
+        for i, cand in enumerate(candidates):
+            parts = {
+                "intent_fit": collab.intent_compatibility(current_user.looking_for, cand.looking_for),
+                "skill_complement": collab.skill_complement(current_user, cand),
+                "tech_match": jaccard(current_user.languages, cand.languages),
+                "interest_match": interest_scores[i],
+                "activity_level": self._activity_similarity(current_user, cand),
+                "community_popularity": min(1.0, cf_liked_by.get(cand.id, 0) / max_cf),
+                "recency_boost": self._recency(cand.last_active_at),
+                "location_bonus": self._location(current_user.location, cand.location),
+            }
+            raw = (
+                parts["intent_fit"] * self.W_INTENT
+                + parts["skill_complement"] * self.W_COMPLEMENT
+                + parts["tech_match"] * self.W_TECH
+                + parts["interest_match"] * self.W_INTERESTS
+                + parts["activity_level"] * self.W_ACTIVITY
+                + parts["community_popularity"] * self.W_COMMUNITY
+                + parts["recency_boost"] * self.W_RECENCY
+                + parts["location_bonus"] * self.W_LOCATION
             )
 
-            # Multiplier for "Quality" profiles (has bio, has photo)
             multiplier = 1.0
-            if candidate.bio: multiplier += 0.05
-            if candidate.avatar_url: multiplier += 0.05
-            
-            final_score = min(100.0, final_raw * 100.0 * multiplier)
+            if cand.bio and cand.bio.strip():
+                multiplier += 0.04
+            if cand.avatar_url:
+                multiplier += 0.03
+            if cand.pitch and cand.pitch.strip():
+                multiplier += 0.05
 
-            scored_list.append(ScoredCandidate(
-                user_id=candidate.id,
-                username=candidate.username,
-                score=round(final_score, 1),
-                score_breakdown={
-                    "tech_match": round(tech_score * 100, 1),
-                    "interest_match": round(int_score * 100, 1),
-                    "activity_level": round(act_score * 100, 1),
-                    "community_popularity": round(comm_score * 100, 1),
-                    "location_bonus": round(loc_score * 100, 1),
-                    "recency_boost": round(rec_score * 100, 1),
-                }
-            ))
+            scored.append(
+                ScoredCandidate(
+                    user_id=cand.id,
+                    username=cand.username,
+                    score=round(min(100.0, raw * 100.0 * multiplier), 1),
+                    score_breakdown={k: round(v * 100, 1) for k, v in parts.items()},
+                )
+            )
 
-        # Sort by score DESC
-        scored_list.sort(key=lambda x: x.score, reverse=True)
-        return scored_list
+        scored.sort(key=lambda s: s.score, reverse=True)
+        return scored
 
-    def _calculate_jaccard(self, list1: List[str], list2: List[str]) -> float:
-        if not list1 or not list2:
-            return 0.0
-        s1 = set(l.lower() for l in list1)
-        s2 = set(l.lower() for l in list2)
-        intersection = s1.intersection(s2)
-        union = s1.union(s2)
-        return len(intersection) / len(union)
+    # ── signals ──────────────────────────────────────────────────────────────
 
-    def _calculate_interest_similarity(self, user: UserProfile, candidates: List[UserSummary]) -> List[float]:
-        """
-        Uses TF-IDF and Cosine Similarity to find topical overlaps.
-        """
-        if TfidfVectorizer is None or not user.interests:
-            # Fallback to simple Jaccard if library missing
-            return [self._calculate_jaccard(user.interests, c.interests) for c in candidates]
+    @staticmethod
+    def _interest_similarity(user: UserProfile, candidates: list[UserProfile]) -> list[float]:
+        user_topics = _topics(user)
+        if TfidfVectorizer is None or not user_topics:
+            return [jaccard(user_topics, _topics(c)) for c in candidates]
+        # Treat each topic as one token ("AI / ML" → "ai_ml") so multi-word
+        # labels don't spuriously match on shared words like "dev".
+        def doc(topics: list[str]) -> str:
+            return " ".join("_".join(t.lower().replace("/", " ").split()) for t in topics if t and t.strip())
 
-        # Combine interests into "documents"
-        docs = [" ".join(user.interests)]
-        for c in candidates:
-            docs.append(" ".join(c.interests) if c.interests else "")
-
+        docs = [doc(user_topics)] + [doc(_topics(c)) for c in candidates]
         try:
-            vectorizer = TfidfVectorizer(token_pattern=r"(?u)\b\w+\b")
-            tfidf_matrix = vectorizer.fit_transform(docs)
-            
-            # cosine_similarity returns matrix[len(docs), len(docs)]
-            # We want similarity of the first doc (user) with all others
-            sims = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:])
-            return sims[0].tolist()
-        except:
-            # If vocab is empty or too small
+            matrix = TfidfVectorizer(token_pattern=r"[^\s]+").fit_transform(docs)
+            return cosine_similarity(matrix[0:1], matrix[1:])[0].tolist()
+        except ValueError:  # empty vocabulary
             return [0.0] * len(candidates)
 
-    def _calculate_activity_score(self, user: UserProfile, candidate: UserSummary) -> float:
-        """
-        Calculates if the users are in a similar "Developer Tier".
-        Uses Log-normalization: log(1 + x)
-        """
-        def get_tier_value(u):
-            # Synthetic activity metric
-            val = (u.followers * 5) + (u.public_repos * 10) + (u.stars if hasattr(u, 'stars') else 0)
-            return np.log1p(val)
+    @staticmethod
+    def _activity_similarity(user: UserProfile, cand: UserProfile) -> float:
+        """1 - relative gap in log-scaled activity. Keeps juniors with peers."""
+        def tier(p: UserProfile) -> float:
+            # Clamp: legacy rows could hold negative counters (clients used to
+            # write them), and log1p(x <= -1) raises, failing the whole request.
+            return math.log1p(max(0, p.followers) * 2 + max(0, p.public_repos) * 5 + max(0, p.total_stars))
 
-        u_val = get_tier_value(user)
-        c_val = get_tier_value(candidate)
+        u, c = tier(user), tier(cand)
+        if u == 0 and c == 0:
+            return 0.5
+        return max(0.0, 1.0 - abs(u - c) / max(u, c))
 
-        if u_val == 0 or c_val == 0:
-            return 0.0
-            
-        # Similarity = 1 - (diff / max)
-        diff = abs(u_val - c_val)
-        sim = 1.0 - (diff / max(u_val, c_val))
-        return float(max(0.0, sim))
-
-    def _calculate_recency_score(self, last_active: datetime | None) -> float:
+    @staticmethod
+    def _recency(last_active: datetime | None) -> float:
         if not last_active:
             return 0.0
-        
-        now = datetime.now(timezone.utc)
         if last_active.tzinfo is None:
-            last_active = last_active.replace(tzinfo=timezone.utc)
-            
-        diff_days = (now - last_active).days
-        
-        if diff_days <= 1: return 1.0
-        if diff_days <= 3: return 0.8
-        if diff_days <= 7: return 0.5
-        if diff_days <= 30: return 0.2
+            last_active = last_active.replace(tzinfo=UTC)
+        days = (datetime.now(UTC) - last_active).days
+        if days <= 1:
+            return 1.0
+        if days <= 3:
+            return 0.8
+        if days <= 7:
+            return 0.5
+        if days <= 30:
+            return 0.2
+        return 0.0
+
+    @staticmethod
+    def _location(a: str | None, b: str | None) -> float:
+        if not a or not b:
+            return 0.0
+        a, b = a.strip().lower(), b.strip().lower()
+        if not a or not b:
+            return 0.0
+        if a == b:
+            return 1.0
+        if a in b or b in a:
+            return 0.5
         return 0.0

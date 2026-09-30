@@ -1,25 +1,39 @@
 """
 Swipes API
 ==========
-POST /api/v1/swipes          — Record a swipe (like / dislike / superLike)
-                                Automatically creates a match if mutual.
-GET  /api/v1/swipes/history  — Return the authenticated user's swipe history.
+POST /api/v1/swipes          — Record (or change) a swipe. Matches are created
+                                by the database trigger when a like is mutual.
+GET  /api/v1/swipes/history  — The caller's recent swipes.
 """
-import logging
+from typing import Literal
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from postgrest.exceptions import APIError
+from pydantic import BaseModel, field_validator
 
 from ...core.auth import verify_token
-from ...repositories.swipe_repository import SwipeRepository
 from ...repositories.match_repository import MatchRepository
+from ...repositories.swipe_repository import SwipeRepository
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/swipes", tags=["swipes"])
+
+_FOREIGN_KEY_VIOLATION = "23503"
 
 
 class SwipeRequest(BaseModel):
     swiped_user_id: str
-    action: str  # "like" | "dislike" | "superLike"
+    action: Literal["like", "dislike", "superLike"]
+
+    @field_validator("swiped_user_id")
+    @classmethod
+    def canonical_uuid(cls, v: str) -> str:
+        # Canonical lower-case form: the self-swipe check and the pair_key
+        # lookup below compare strings, and Postgres prints uuids lower-case.
+        try:
+            return str(UUID(v))
+        except ValueError:
+            raise ValueError("swiped_user_id must be a UUID.") from None
 
 
 class SwipeResponse(BaseModel):
@@ -36,61 +50,21 @@ class SwipeHistoryItem(BaseModel):
 
 
 @router.post("", response_model=SwipeResponse, status_code=status.HTTP_201_CREATED)
-async def record_swipe(
-    body: SwipeRequest,
-    user_id: str = Depends(verify_token),
-):
-    """
-    Record a swipe action.
-
-    If the action is `like` or `superLike` AND the other user has already
-    liked the caller, a match is automatically created and returned.
-    """
-    if body.action not in ("like", "dislike", "superLike"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid action '{body.action}'. Must be 'like', 'dislike', or 'superLike'.",
-        )
-
+async def record_swipe(body: SwipeRequest, user_id: str = Depends(verify_token)):
     if body.swiped_user_id == user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot swipe on yourself.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot swipe on yourself.")
 
-    swipe_repo = SwipeRepository()
-    match_repo = MatchRepository()
-
-    # Upsert swipe (insert or update if already exists)
     try:
-        swipe_repo.record_swipe(user_id, body.swiped_user_id, body.action)
-    except Exception as exc:
-        logger.warning("Swipe insert error (likely duplicate): %s", exc)
-        # If unique constraint violation, update instead
-        swipe_repo.update_swipe(user_id, body.swiped_user_id, body.action)
+        SwipeRepository().upsert_swipe(user_id, body.swiped_user_id, body.action)
+    except APIError as exc:
+        if exc.code == _FOREIGN_KEY_VIOLATION:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.") from exc
+        raise
 
-    # Check for mutual like → create match
-    matched = False
-    match_id = None
-
-    if body.action in ("like", "superLike"):
-        likers = swipe_repo.get_likers_of(user_id)
-        if body.swiped_user_id in likers:
-            # Check if match already exists
-            existing = match_repo.check_existing_match(user_id, body.swiped_user_id)
-            if existing is None:
-                new_match = match_repo.create_match(user_id, body.swiped_user_id)
-                match_id = new_match.get("id")
-                matched = True
-                logger.info(
-                    "Match created between %s and %s (match_id=%s)",
-                    user_id, body.swiped_user_id, match_id,
-                )
-            else:
-                match_id = str(existing["id"])
-                matched = True
-
-    return SwipeResponse(status="ok", matched=matched, match_id=match_id)
+    if body.action == "dislike":
+        return SwipeResponse(status="ok")
+    match = MatchRepository().get_match_between(user_id, body.swiped_user_id)
+    return SwipeResponse(status="ok", matched=match is not None, match_id=str(match["id"]) if match else None)
 
 
 @router.get("/history", response_model=list[SwipeHistoryItem])
@@ -98,15 +72,10 @@ async def get_swipe_history(
     limit: int = Query(default=50, ge=1, le=200),
     user_id: str = Depends(verify_token),
 ):
-    """Return the authenticated user's recent swipe history."""
-    swipe_repo = SwipeRepository()
-    rows = swipe_repo.get_swipe_history(user_id, limit)
+    rows = SwipeRepository().get_swipe_history(user_id, limit)
     return [
         SwipeHistoryItem(
-            id=str(row["id"]),
-            swiped_user_id=row["swiped_user_id"],
-            action=row["action"],
-            swiped_at=str(row["swiped_at"]),
+            id=str(r["id"]), swiped_user_id=r["swiped_user_id"], action=r["action"], swiped_at=str(r["swiped_at"])
         )
-        for row in rows
+        for r in rows
     ]

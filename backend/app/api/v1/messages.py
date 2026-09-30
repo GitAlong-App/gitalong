@@ -1,21 +1,25 @@
 """
 Messages API
 =============
-GET  /api/v1/matches/{match_id}/messages  — Fetch messages for a match.
-POST /api/v1/matches/{match_id}/messages  — Send a message in a match.
-PUT  /api/v1/matches/{match_id}/messages/read — Mark all messages as read.
+GET  /api/v1/matches/{match_id}/messages       — Messages in a match (newest first).
+POST /api/v1/matches/{match_id}/messages       — Send a message.
+PUT  /api/v1/matches/{match_id}/messages/read  — Mark received messages read.
 """
-import logging
-import re
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, field_validator
 
 from ...core.auth import verify_token
+from ...database import get_supabase_client
 from ...repositories.match_repository import MatchRepository
 from ...repositories.message_repository import MessageRepository
+from ._validation import timestamp_cursor
+from .matches import _require_member
 
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/matches", tags=["messages"])
+
+MAX_MESSAGE_LENGTH = 4000
 
 
 class MessageOut(BaseModel):
@@ -34,24 +38,22 @@ class MessageListResponse(BaseModel):
     count: int
 
 
-MAX_MESSAGE_LENGTH = 2000
-
-
 class SendMessageRequest(BaseModel):
     receiver_id: str
     content: str
-    type: str = "text"
+    type: Literal["text", "link", "code"] = "text"
 
     @field_validator("content")
     @classmethod
     def validate_content(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
+        # Stored verbatim, as on the direct Supabase path: developers send code
+        # like `Vec<String>` and indented snippets, and clients render plain
+        # text, so nothing is sanitised or trimmed (trimming ate the first
+        # line's indentation of code messages).
+        if not v.strip():
             raise ValueError("Message content cannot be empty.")
         if len(v) > MAX_MESSAGE_LENGTH:
             raise ValueError(f"Message too long (max {MAX_MESSAGE_LENGTH} characters).")
-        # Strip HTML tags to prevent XSS
-        v = re.sub(r"<[^>]+>", "", v)
         return v
 
 
@@ -60,111 +62,64 @@ class SendMessageResponse(BaseModel):
     status: str = "sent"
 
 
-def _verify_match_membership(match_id: str, user_id: str) -> dict:
-    """Verify user is part of the match. Returns match data or raises 403."""
-    match_repo = MatchRepository()
-    row = match_repo.get_match_by_id(match_id)
-    if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Match not found.")
-    if user_id not in row.get("users", []):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not part of this match.")
-    return row
+def _to_out(row: dict) -> MessageOut:
+    return MessageOut(
+        id=str(row["id"]),
+        match_id=str(row["match_id"]),
+        sender_id=row["sender_id"],
+        receiver_id=row["receiver_id"],
+        content=row["content"],
+        type=row.get("type") or "text",
+        sent_at=str(row.get("sent_at", "")),
+        is_read=bool(row.get("is_read", False)),
+    )
+
+
+def _is_blocked(user_a: str, user_b: str) -> bool:
+    resp = (
+        get_supabase_client()
+        .table("blocks")
+        .select("blocker_id")
+        .or_(f"and(blocker_id.eq.{user_a},blocked_id.eq.{user_b}),and(blocker_id.eq.{user_b},blocked_id.eq.{user_a})")
+        .limit(1)
+        .execute()
+    )
+    return bool(resp.data)
 
 
 @router.get("/{match_id}/messages", response_model=MessageListResponse)
 async def get_messages(
     match_id: str,
     limit: int = Query(default=50, ge=1, le=200),
-    before: str | None = Query(default=None, description="ISO timestamp cursor for pagination"),
+    before: str | None = Query(default=None, description="ISO timestamp cursor (sent_at)"),
     user_id: str = Depends(verify_token),
 ):
-    """Fetch messages for a match (newest first)."""
-    _verify_match_membership(match_id, user_id)
-
-    msg_repo = MessageRepository()
-    rows = msg_repo.get_messages(match_id, limit, before)
-
-    messages = [
-        MessageOut(
-            id=str(row["id"]),
-            match_id=match_id,
-            sender_id=row["sender_id"],
-            receiver_id=row["receiver_id"],
-            content=row["content"],
-            type=row.get("type", "text"),
-            sent_at=str(row["sent_at"]),
-            is_read=row.get("is_read", False),
-        )
-        for row in rows
-    ]
-
+    cursor = timestamp_cursor(before)
+    match = _require_member(match_id, user_id)
+    rows = MessageRepository().get_messages(str(match["id"]), limit, cursor)
+    messages = [_to_out(r) for r in rows]
     return MessageListResponse(messages=messages, count=len(messages))
 
 
-@router.post(
-    "/{match_id}/messages",
-    response_model=SendMessageResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def send_message(
-    match_id: str,
-    body: SendMessageRequest,
-    user_id: str = Depends(verify_token),
-):
-    """Send a message in a match."""
-    match_data = _verify_match_membership(match_id, user_id)
-
-    # Verify receiver is the other user in the match
-    users_list = match_data.get("users", [])
-    if body.receiver_id not in users_list:
+@router.post("/{match_id}/messages", response_model=SendMessageResponse, status_code=status.HTTP_201_CREATED)
+async def send_message(match_id: str, body: SendMessageRequest, user_id: str = Depends(verify_token)):
+    match = _require_member(match_id, user_id)
+    if body.receiver_id == user_id or body.receiver_id not in (match.get("users") or []):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Receiver is not part of this match.",
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Receiver is not the other member of this match."
         )
-    if body.receiver_id == user_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot send message to yourself.",
-        )
+    if _is_blocked(user_id, body.receiver_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can't message this user.")
 
-    if not body.content.strip():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Message content cannot be empty.",
-        )
-
-    msg_repo = MessageRepository()
-    row = msg_repo.send_message(
-        match_id=match_id,
-        sender_id=user_id,
-        receiver_id=body.receiver_id,
-        content=body.content.strip(),
-        msg_type=body.type,
-    )
-
-    message = MessageOut(
-        id=str(row["id"]),
-        match_id=match_id,
-        sender_id=user_id,
-        receiver_id=body.receiver_id,
-        content=body.content.strip(),
-        type=body.type,
-        sent_at=str(row.get("sent_at", "")),
-        is_read=False,
-    )
-
-    return SendMessageResponse(message=message)
+    row = MessageRepository().send_message(str(match["id"]), user_id, body.receiver_id, body.content, body.type)
+    if not row:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Message could not be sent.")
+    return SendMessageResponse(message=_to_out(row))
 
 
 @router.put("/{match_id}/messages/read", status_code=status.HTTP_200_OK)
-async def mark_messages_read(
-    match_id: str,
-    user_id: str = Depends(verify_token),
-):
-    """Mark all unread messages in a match as read for the authenticated user."""
-    _verify_match_membership(match_id, user_id)
-
-    msg_repo = MessageRepository()
-    count = msg_repo.mark_as_read(match_id, user_id)
-
+async def mark_messages_read(match_id: str, user_id: str = Depends(verify_token)):
+    match_id = str(_require_member(match_id, user_id)["id"])
+    count = MessageRepository().mark_as_read(match_id, user_id)
+    MatchRepository().mark_read(match_id, user_id)
     return {"status": "ok", "marked_read": count}

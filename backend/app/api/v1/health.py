@@ -1,5 +1,8 @@
 import logging
+
 from fastapi import APIRouter
+
+from ...database import get_supabase_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -7,16 +10,10 @@ router = APIRouter()
 
 @router.get("/health", tags=["health"])
 async def health_check():
-    result = {"status": "ok", "service": "GitAlong API", "database": "unknown"}
-
+    """Liveness + database reachability. Never returns internal error details."""
     try:
-        from ...database import get_supabase_client
-        client = get_supabase_client()
-        resp = client.table("users").select("id").limit(1).execute()
-        result["database"] = "connected"
-        result["user_count_sample"] = len(resp.data) if resp.data else 0
-    except Exception as exc:
+        get_supabase_client().table("ml_model_params").select("model_name").limit(1).execute()
+        return {"status": "ok", "service": "GitAlong API", "database": "connected"}
+    except Exception:
         logger.exception("Health check DB probe failed")
-        result["database"] = f"error: {type(exc).__name__}: {exc}"
-
-    return result
+        return {"status": "degraded", "service": "GitAlong API", "database": "unavailable"}
