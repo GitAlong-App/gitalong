@@ -29,6 +29,7 @@ class Settings(BaseSettings):
         "https://gitalong.app",
         "https://www.gitalong.app",
         "https://gitalong.vercel.app",
+        "https://gitalong-preview.vercel.app",
         "http://localhost:3000",
         "http://localhost:5173",
     ]
