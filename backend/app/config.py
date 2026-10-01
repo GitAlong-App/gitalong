@@ -28,10 +28,10 @@ class Settings(BaseSettings):
     allowed_origins: str | list[str] = [
         "https://gitalong.app",
         "https://www.gitalong.app",
-        "https://gitalong.vercel.app",
         "https://gitalong-preview.vercel.app",
         "http://localhost:3000",
         "http://localhost:5173",
+        "http://127.0.0.1:5173",
     ]
 
     @field_validator("allowed_origins", mode="before")

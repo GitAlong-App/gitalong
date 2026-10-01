@@ -35,8 +35,18 @@ repositories (see `docs/AUDIT.md` → *Action required*).
 
 Auth settings:
 - Providers → GitHub enabled.
-- Redirect URLs: `app.gitalong://login-callback/`, `https://gitalong.app`,
-  `https://www.gitalong.app`, `https://gitalong.vercel.app`.
+- URL Configuration → Site URL: `https://gitalong.app`.
+- URL Configuration → Redirect URLs: `app.gitalong://login-callback/`,
+  `https://gitalong.app/**`, `https://www.gitalong.app/**`,
+  `https://gitalong-preview.vercel.app/**`, `http://localhost:5173/**`,
+  `http://127.0.0.1:5173/**`. When the page a user signs in from isn't on this
+  list, Supabase sends them to the Site URL instead, so a Site URL that
+  doesn't serve the site breaks sign-in.
+- Don't list domains you don't control (`gitalong.vercel.app` belongs to
+  someone else): Supabase would hand session tokens to that site.
+- GitHub OAuth App callback URL: `https://<project>.supabase.co/auth/v1/callback`.
+- DNS: `gitalong.app` needs `A @ 76.76.21.21` (and `CNAME www cname.vercel-dns.com`)
+  at the registrar (Name.com) and must be added to the Vercel project `gitalong`.
 
 ## 2. Backend (Render, Docker)
 

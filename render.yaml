@@ -18,7 +18,7 @@ services:
       - key: ADMIN_RETRAIN_SECRET
         generateValue: true
       - key: ALLOWED_ORIGINS
-        value: https://gitalong.app,https://www.gitalong.app,https://gitalong.vercel.app
+        value: https://gitalong.app,https://www.gitalong.app,https://gitalong-preview.vercel.app,http://localhost:5173,http://127.0.0.1:5173
       - key: WEB_CONCURRENCY
         value: "1"
       - key: ML_RANKING_ENABLED
