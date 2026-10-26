@@ -93,27 +93,40 @@ class DiscoverHeader extends StatelessWidget {
               constraints: const BoxConstraints(
                 minHeight: AppTokens.minTouchTarget,
               ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Semantics(
-                      header: true,
-                      child: Text(
-                        'Discover',
-                        style: AppTextStyles.h1(p.ink),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
+              child: LayoutBuilder(
+                builder: (context, constraints) => Row(
+                  children: [
+                    Expanded(
+                      child: Semantics(
+                        header: true,
+                        child: Text(
+                          'Discover',
+                          style: AppTextStyles.h1(p.ink),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ),
-                  ),
-                  AnimatedSwitcher(
-                    duration: duration,
-                    child: KeyedSubtree(
-                      key: ValueKey<String>('stats-$kind'),
-                      child: stats,
+                    // At large text sizes the chips shrink to fit instead of
+                    // overflowing; at normal sizes they render as designed.
+                    ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth: constraints.maxWidth * 0.62,
+                      ),
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerRight,
+                        child: AnimatedSwitcher(
+                          duration: duration,
+                          child: KeyedSubtree(
+                            key: ValueKey<String>('stats-$kind'),
+                            child: stats,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
             AnimatedSwitcher(

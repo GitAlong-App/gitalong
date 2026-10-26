@@ -187,20 +187,29 @@ class DaySeparator extends StatelessWidget {
         child: Row(
           children: [
             line,
-            Container(
-              margin: const EdgeInsets.symmetric(horizontal: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(
-                color: palette.card,
-                borderRadius: BorderRadius.circular(AppTokens.radiusPill),
-                border: Border.all(
-                  color: palette.border,
-                  width: AppTokens.borderWidth,
-                ),
+            // Capped width: a long date at large text sizes wraps inside the
+            // pill instead of overflowing the row; the lines keep the rest.
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: MediaQuery.sizeOf(context).width * 0.7,
               ),
-              child: Text(
-                label.toUpperCase(),
-                style: AppTextStyles.caption(palette.inkMuted),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 10),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                decoration: BoxDecoration(
+                  color: palette.card,
+                  borderRadius: BorderRadius.circular(AppTokens.radiusPill),
+                  border: Border.all(
+                    color: palette.border,
+                    width: AppTokens.borderWidth,
+                  ),
+                ),
+                child: Text(
+                  label.toUpperCase(),
+                  textAlign: TextAlign.center,
+                  style: AppTextStyles.caption(palette.inkMuted),
+                ),
               ),
             ),
             line,

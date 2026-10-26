@@ -119,7 +119,9 @@ class SettingsRow extends StatelessWidget {
             ),
             if (trailing != null) ...[
               const SizedBox(width: AppTokens.space12),
-              trailing,
+              // Long trailing values (e.g. the version string) wrap instead of
+              // pushing the row off screen at large text sizes.
+              Flexible(child: trailing),
             ],
           ],
         ),
