@@ -50,9 +50,14 @@ class StatChip extends StatelessWidget {
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [leading, const SizedBox(width: 6), value],
+              // Shrinks only when a huge number at large text sizes would
+              // not fit; at normal sizes it renders as designed.
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [leading, const SizedBox(width: 6), value],
+                ),
               ),
             ),
           ),

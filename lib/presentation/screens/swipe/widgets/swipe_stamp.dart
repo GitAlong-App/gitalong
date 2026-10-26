@@ -42,7 +42,11 @@ class SwipeStamp extends StatelessWidget {
               decoration: BoxDecoration(color: tone.fill, borderRadius: _radius),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 6, 16, 6),
-                child: Row(
+                // Scales down rather than overflowing the card at large
+                // text sizes.
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Icon(icon, size: 26, color: tone.onFill),
@@ -57,6 +61,7 @@ class SwipeStamp extends StatelessWidget {
                       ),
                     ),
                   ],
+                  ),
                 ),
               ),
             ),
