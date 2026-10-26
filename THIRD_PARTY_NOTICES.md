@@ -10,7 +10,7 @@ text is in `LICENSE-fluentui-emoji.txt` next to the images.
 
 ## Icons
 
-- App: Phosphor Icons (MIT) via `phosphor_flutter`.
+- App: Phosphor Icons (MIT), icon fonts bundled in `assets/fonts/phosphor/` (licence alongside), originally from `phosphor_flutter`.
 - Website: Lucide (ISC) via `lucide-react`.
 
 ## Fonts
