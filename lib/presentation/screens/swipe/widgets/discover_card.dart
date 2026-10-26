@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:phosphor_flutter/phosphor_flutter.dart';
+import 'package:gitalong/core/theme/phosphor_icons.dart';
 
 import '../../../../core/constants/collab_constants.dart';
 import '../../../../core/constants/illustrations.dart';

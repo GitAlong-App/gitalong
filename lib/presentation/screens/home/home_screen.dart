@@ -3,9 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:phosphor_flutter/phosphor_flutter.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:gitalong/core/theme/phosphor_icons.dart';
 
+import '../../../core/auth/auth_session.dart';
 import '../../../core/constants/illustrations.dart';
 import '../../../core/di/injection.dart';
 import '../../../core/theme/app_palette.dart';
@@ -193,7 +193,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final userId = Supabase.instance.client.auth.currentUser?.id;
+    final userId = getIt<AuthSession>().currentUserId;
     final palette = context.palette;
     final reduceMotion = AppTokens.reduceMotion(context);
 

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:phosphor_flutter/phosphor_flutter.dart';
+import 'package:gitalong/core/theme/phosphor_icons.dart';
 
 import '../../../../core/theme/app_tokens.dart';
 import '../../../widgets/ui/ui.dart';

@@ -92,24 +92,35 @@ class ConversationTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppTextStyles.h3(palette.ink),
+                LayoutBuilder(
+                  builder: (context, constraints) => Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppTextStyles.h3(palette.ink),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      shortRelativeTime(context, time),
-                      style: AppTextStyles.bodySmall(
-                        unread ? accent : palette.inkMuted,
-                      ).copyWith(fontWeight: FontWeight.w800),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      // Capped so a long label ("Yesterday") at large text
+                      // sizes can't push the row off screen.
+                      ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: constraints.maxWidth * 0.45,
+                        ),
+                        child: Text(
+                          shortRelativeTime(context, time),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppTextStyles.bodySmall(
+                            unread ? accent : palette.inkMuted,
+                          ).copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 2),
                 Row(

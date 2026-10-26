@@ -14,6 +14,7 @@ import 'package:google_sign_in/google_sign_in.dart' as _i116;
 import 'package:injectable/injectable.dart' as _i526;
 import 'package:supabase_flutter/supabase_flutter.dart' as _i454;
 
+import '../auth/auth_session.dart' as _i9994;
 import '../../data/repositories/auth_repository_impl.dart' as _i895;
 import '../../data/repositories/chat_repository_impl.dart' as _i838;
 import '../../data/repositories/match_repository_impl.dart' as _i395;
@@ -55,6 +56,9 @@ extension GetItInjectableX on _i174.GetIt {
     _i526.EnvironmentFilter? environmentFilter,
   }) {
     final gh = _i526.GetItHelper(this, environment, environmentFilter);
+    gh.lazySingleton<_i9994.AuthSession>(
+      () => _i9994.SupabaseAuthSession(gh<_i454.SupabaseClient>()),
+    );
     gh.lazySingleton<_i1072.ChatRepository>(
       () => _i838.ChatRepositoryImpl(gh<_i454.SupabaseClient>()),
     );
@@ -154,6 +158,7 @@ extension GetItInjectableX on _i174.GetIt {
         gh<_i792.SignInWithAppleUseCase>(),
         gh<_i1014.SignOutUseCase>(),
         gh<_i778.DeleteAccountUseCase>(),
+        gh<_i9994.AuthSession>(),
       ),
     );
     return this;

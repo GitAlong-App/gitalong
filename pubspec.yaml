@@ -52,7 +52,6 @@ dependencies:
 
   # Fonts & Icons
   google_fonts: ^6.3.0
-  phosphor_flutter: ^2.1.0
 
   # Environment
   flutter_dotenv: ^6.0.0
@@ -89,6 +88,19 @@ flutter:
     - assets/illustrations/
     - assets/icons/
     - .env
+
+  # Phosphor icon fonts (MIT), bundled directly: phosphor_flutter no longer
+  # compiles on Flutter 3.47. Constants live in lib/core/theme/phosphor_icons.dart.
+  fonts:
+    - family: Phosphor
+      fonts:
+        - asset: assets/fonts/phosphor/Phosphor.ttf
+    - family: PhosphorBold
+      fonts:
+        - asset: assets/fonts/phosphor/Phosphor-Bold.ttf
+    - family: PhosphorFill
+      fonts:
+        - asset: assets/fonts/phosphor/Phosphor-Fill.ttf
 
 flutter_launcher_icons:
   android: "launcher_icon"
